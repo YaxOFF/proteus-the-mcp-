@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "proteus": {
+      "command": "D:\\tasks\\proteus-mcp\\.venv\\Scripts\\proteus-mcp.exe",
+      "args": []
+    }
+  }
+}

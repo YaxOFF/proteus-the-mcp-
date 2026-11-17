@@ -251,7 +251,9 @@ class Session:
         self._wait(saved)
         return self.project
 
-    def close(self):
+    def close(self, discard=False):
+        """Exit Proteus. With discard=True a "Save changes?" prompt is answered No
+        (use it for disposable copies, e.g. after a simulation run marked the project dirty)."""
         if self.process.poll() is not None:
             return self.process.returncode
         time.sleep(1)
@@ -262,6 +264,9 @@ class Session:
             if self.process.poll() is not None:
                 return self.process.returncode
             for dialog in native.windows(self.pid):
+                if discard and dialog["cls"] == "#32770" and any(
+                        child["title"] == "Save changes to current project?" for child in dialog["children"]):
+                    self._click(dialog, "&No")
                 if dialog["title"] == "Fatal Error":
                     self.process.terminate()
                     self.process.wait(timeout=5)

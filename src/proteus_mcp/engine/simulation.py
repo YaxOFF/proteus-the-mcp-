@@ -1,4 +1,15 @@
-"""Proteus 8.16 simulation controls and native diagnostic readout (Windows)."""
+"""Proteus simulation controls and native diagnostic readout (Windows).
+
+Two layouts are supported:
+
+* Proteus 8.16 (verified WINCORE.DLL fingerprint): status text, timed breakpoints and
+  actuator controls read the application's native objects.
+* Proteus 8.13 (any other build): run/pause/stop use the Debug menu only. Menu enable
+  flags are refreshed first (``WM_INITMENUPOPUP``) because Proteus only updates them
+  lazily; Pause is enabled while running, "Run Simulation" is enabled while stopped or
+  paused. The Simulation Log is read from its list view. Timed runs and actuator
+  controls are not available: use the probe's ``STEP`` command (see ``proteus_mcp.probe``).
+"""
 import ctypes as c
 from ctypes import wintypes as w
 from pathlib import Path
@@ -180,6 +191,8 @@ class Simulation:
         window = session._ready()
         if not window:
             return dict(state="blocked", windows=native.windows(session.pid), simulation_seconds=None)
+        if not self._known_status_layout:
+            self._refresh_debug_menu(window["hwnd"])  # 8.13 menu flags are otherwise stale
         menus = {row["path"]: row["enabled"] for row in native.menus(native.u.GetMenu(window["hwnd"]))}
         pause, stop = menus.get("Debug/Pause VSM Debugging"), menus.get("Debug/Stop VSM Debugging")
         if pause is None or stop is None:
@@ -206,14 +219,32 @@ class Simulation:
             return state if state["state"] in expected else None
         return self.session._wait(reached, timeout=timeout)
 
+    @staticmethod
+    def _refresh_debug_menu(hwnd):
+        """Make Proteus recompute the Debug menu's enable flags (it only does so lazily)."""
+        u = native.u
+        u.SendMessageTimeoutW.argtypes = (w.HWND, w.UINT, w.WPARAM, w.LPARAM,
+                                          w.UINT, w.UINT, c.POINTER(c.c_size_t))
+        u.SendMessageTimeoutW.restype = w.LPARAM
+        bar = u.GetMenu(hwnd)
+        for index in range(u.GetMenuItemCount(bar)):
+            text = c.create_unicode_buffer(64)
+            u.GetMenuStringW(bar, index, text, len(text), 0x400)
+            if text.value.replace("&", "") == "Debug":
+                result = c.c_size_t()
+                u.SendMessageTimeoutW(hwnd, 0x117, u.GetSubMenu(bar, index), index, 2, 3000, c.byref(result))  # WM_INITMENUPOPUP
+                return
+
     def _menu(self, path):
         # Proteus can leave menu enable bits stale after a timed breakpoint.
         # On the verified build callers gate commands on native simulator state;
-        # other builds must wait for the standard menu's enabled state.
+        # other builds refresh the menu and wait for the item's enabled state.
         def enabled():
             window = self.session._ready()
             if not window:
                 return None
+            if not self._known_status_layout:
+                self._refresh_debug_menu(window["hwnd"])
             items = [row for row in native.menus(native.u.GetMenu(window["hwnd"]))
                      if row["path"] == path]
             if len(items) != 1:
@@ -221,11 +252,16 @@ class Simulation:
             return ((window["hwnd"], items[0]["command_id"])
                     if self._known_status_layout or items[0]["enabled"] else None)
         hwnd, command = self.session._wait(enabled)
-        self._message(hwnd, 0x111, command)
+        if self._known_status_layout:
+            self._message(hwnd, 0x111, command)
+        elif not native.u.PostMessageW(hwnd, 0x111, command, 0):
+            raise c.WinError(c.get_last_error())
 
     def start(self):
-        if self.status()["state"] == "running":
-            return self.status()
+        """Start (from stopped) or resume (from paused) the simulation via "Run Simulation"."""
+        state = self.status()
+        if state["state"] == "running":
+            return state
         self._menu("Debug/Run Simulation")
         return self._until({"running"})
 
@@ -359,6 +395,10 @@ class Simulation:
         The returned actual time/overshoot are authoritative. Set tolerance_seconds=0 for
         a strict stop; the default accepts up to 3 ms of native timer quantization.
         """
+        if not self._known_status_layout:
+            raise NotImplementedError(
+                "run_for needs the verified Proteus 8.16 WINCORE layout. On 8.13 attach a probe "
+                "(proteus_mcp.probe) and use BridgeClient.step(seconds) for deterministic timed runs.")
         seconds = float(seconds)
         tolerance = float(tolerance_seconds)
         if not math.isfinite(seconds) or seconds < 1e-6:
@@ -368,8 +408,6 @@ class Simulation:
         if not math.isfinite(tolerance) or tolerance < 0:
             raise ValueError("Tolerance must be finite and nonnegative")
         before = self.status()
-        if not self._known_status_layout:
-            raise NotImplementedError("Timed completion requires the verified Proteus 8.16 WINCORE layout")
         if before["state"] == "running":
             self.pause()
             before = self.status()
@@ -445,6 +483,8 @@ class Simulation:
         The supported window is the floating Simulation Log. A VSM Studio dock
         without a matching native window is rejected instead of reading stale data.
         """
+        if not self._known_status_layout:
+            return self._log_listview()
         session, u, k = self.session, native.u, native.k
         def log_window():
             rows = [row for row in native.windows(session.pid) if row["title"] == "Simulation Log"]
@@ -491,6 +531,59 @@ class Simulation:
                 k.GlobalUnlock(handle)
         finally:
             u.CloseClipboard()
+
+    def _log_listview(self):
+        """Proteus 8.13: the Simulation Log is a floating tool window holding a list view.
+
+        Rows are read with LVM_GETITEMTEXT using a small buffer allocated inside Proteus.
+        """
+        session, u, k = self.session, native.u, native.k
+        def log_window():
+            rows = [row for row in native.windows(session.pid) if row["title"] == "Simulation Log"]
+            return rows[0] if len(rows) == 1 else None
+        if not log_window():
+            if self.status()["state"] not in ("running", "paused"):
+                raise RuntimeError("The Simulation Log exists only while a simulation is running or paused")
+            self._menu("Debug/1. Simulation Log")
+        window = session._wait(log_window)
+        views = [row for row in window["children"] if row["cls"] == "SysListView32"]
+        headers = [row for row in window["children"] if row["cls"] == "SysHeader32"]
+        if len(views) != 1:
+            raise RuntimeError("Unrecognized Simulation Log window")
+        view = views[0]["hwnd"]
+        k.VirtualAllocEx.argtypes = (w.HANDLE, c.c_void_p, c.c_size_t, w.DWORD, w.DWORD)
+        k.VirtualAllocEx.restype = c.c_void_p
+        k.VirtualFreeEx.argtypes = (w.HANDLE, c.c_void_p, c.c_size_t, w.DWORD)
+        k.WriteProcessMemory.argtypes = (w.HANDLE, c.c_void_p, c.c_void_p, c.c_size_t, c.POINTER(c.c_size_t))
+        k.ReadProcessMemory.argtypes = (w.HANDLE, c.c_void_p, c.c_void_p, c.c_size_t, c.POINTER(c.c_size_t))
+        count = self._message(view, 0x1004)  # LVM_GETITEMCOUNT
+        columns = max(1, self._message(headers[0]["hwnd"], 0x1200)) if headers else 1  # HDM_GETITEMCOUNT
+        process = k.OpenProcess(0x438, False, session.pid)  # VM operation/read/write + query
+        if not process:
+            raise c.WinError(c.get_last_error())
+        remote = k.VirtualAllocEx(process, None, 4096, 0x3000, 4)
+        if not remote:
+            k.CloseHandle(process)
+            raise c.WinError(c.get_last_error())
+        try:
+            lines = []
+            for row in range(count):
+                cells = []
+                for column in range(columns):
+                    # 32-bit LVITEMW: mask, iItem, iSubItem, state, stateMask, pszText, cchTextMax, iImage, lParam
+                    item = struct.pack("<9I", 1, row, column, 0, 0, remote + 64, 1000, 0, 0)
+                    written = c.c_size_t()
+                    k.WriteProcessMemory(process, remote, item, len(item), c.byref(written))
+                    self._message(view, 0x1073, row, remote)  # LVM_GETITEMTEXTW
+                    buffer, got = c.create_string_buffer(2000), c.c_size_t()
+                    if not k.ReadProcessMemory(process, remote + 64, buffer, 2000, c.byref(got)):
+                        raise c.WinError(c.get_last_error())
+                    cells.append(buffer.raw.decode("utf-16-le", errors="replace").split("\0", 1)[0])
+                lines.append("\t".join(cells).rstrip())
+            return "\n".join(lines)
+        finally:
+            k.VirtualFreeEx(process, remote, 0, 0x8000)
+            k.CloseHandle(process)
 
     def gpio_events(self, **filters):
         return gpio_events(self.log(), **filters)
