@@ -145,6 +145,68 @@ def template_from_component(project, ref):
             "show_properties": bool(item["fields"][3].get("display_text", item["fields"][3]["text"]))}
 
 
+def _graphic_references(data, offset=0, end=None):
+    """Read child-symbol and marker names from typed native graphic records."""
+    end = len(data) if end is None else end
+    _need(0 <= offset <= end - 12, "Truncated graphic list")
+    size, count, reserved = struct.unpack_from("<3I", data, offset)
+    limit = offset + size
+    _need(size >= 12 and limit <= end and count <= 65535 and reserved == 1,
+          "Invalid graphic list")
+    cursor, references = offset + 12, set()
+    for _ in range(count):
+        _need(cursor <= limit - 12, "Truncated graphic record")
+        length = struct.unpack_from("<I", data, cursor)[0]
+        stop = cursor + length
+        _need(length >= 12 and stop <= limit, "Invalid graphic record")
+        if data[cursor + 8:cursor + 10] in (b"\x06\x02", b"\x08\x02"):
+            _need(length >= 29, "Truncated child-symbol reference")
+            start = cursor + 28
+            terminator = data.find(b"\0", start, stop)
+            _need(start < terminator and terminator - start < 255,
+                  "Invalid child-symbol reference")
+            raw = data[start:terminator]
+            _need(all(32 <= char < 127 for char in raw), "Non-ASCII child-symbol reference")
+            references.add(raw.decode("ascii"))
+        cursor = stop
+    _need(cursor == limit, "Graphic list record count/length mismatch")
+    return references
+
+
+def _device_graphic_references(body):
+    """Parse the drawing, pin glyph fields and each named animation drawing."""
+    from .pin_geometry import _device_pins
+
+    pins = _device_pins(body, 0, len(body))
+    references = _graphic_references(body, 16)
+    references.update(pin["glyph"] for pin in pins)
+    last = pins[-1]
+    cursor = last["record_offset"] + 16 + sum(len(last[k]) + 1 for k in ("glyph", "name", "number"))
+    geometry_end = struct.unpack_from("<I", body, 4)[0]
+    variants = struct.unpack_from("<H", body, 10)[0]
+    for _ in range(variants):
+        cursor = body.index(b"\0", cursor, geometry_end) + 1
+        references.update(_graphic_references(body, cursor, geometry_end))
+        cursor += struct.unpack_from("<I", body, cursor)[0]
+    _need(cursor == geometry_end, "Device graphics/pin boundary mismatch")
+    return references
+
+
+def _require_graphics(body, graphics):
+    """Validate direct and transitive dependencies, including ordinary names."""
+    pending, visited, missing = list(_device_graphic_references(body)), set(), set()
+    while pending:
+        name = pending.pop()
+        if name in visited:
+            continue
+        visited.add(name)
+        if name not in graphics:
+            missing.add(name)
+        else:
+            pending.extend(_graphic_references(graphics[name]["body"]) - visited)
+    _need(not missing, f"Missing graphic dependencies: {sorted(missing)}")
+
+
 class Circuit:
     def __init__(self, template_project=SOURCE):
         self.source = Path(template_project).resolve()
@@ -240,9 +302,7 @@ class Circuit:
         if donor_definitions is not None:
             for key, definition in donor_definitions["graphics"].items():
                 graphics.setdefault(key, definition)
-        required = {match.group().decode("ascii").rstrip("\0")
-                    for match in re.finditer(rb"\$[A-Z][A-Z0-9_]*\x00", body)}
-        _need(required <= graphics.keys(), f"Missing graphic dependencies: {sorted(required - graphics.keys())}")
+        _require_graphics(body, graphics)
         devices[name] = {"entry": device_entry, "body": body}
         group_bytes = b"\xfe\xff" + b"".join(graphics[key]["entry"] for key in sorted(graphics)) + b"\0"
         group_bytes += b"\xfe\xff" + b"".join(devices[key]["entry"] for key in sorted(devices)) + b"\0"
@@ -268,6 +328,13 @@ class Circuit:
             for line in metadata['pinouts'][package]:
                 if re.fullmatch(r'\{ELEMENTS\s*=\s*1\}', line):
                     elements += 1
+                    continue
+                no_connect = re.fullmatch(r'\{NC\s*=\s*([A-Za-z0-9]+(?:\s*[,/]\s*[A-Za-z0-9]+)*)\}', line)
+                if no_connect:
+                    pads = re.split(r'\s*[,/]\s*', no_connect[1])
+                    _need(len(set(pads)) == len(pads) and not physical.intersection(pads),
+                          'A package pad is mapped more than once')
+                    physical.update(pads)
                     continue
                 group = re.fullmatch(r'\{COMMON\s*=\s*([^{}]+)\}', line)
                 if group:

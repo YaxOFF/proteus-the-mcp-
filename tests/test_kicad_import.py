@@ -173,7 +173,7 @@ def test_skipped_part_keeps_surviving_net_and_reports_reason(tmp_path):
     ET.SubElement(root.findall("./nets/net")[2], "node", ref="U99", pin="1")
     source = tmp_path / "partial.xml"
     tree.write(source)
-    report = importer.kicad_to_proteus(source, tmp_path / "partial.pdsprj", TEMPLATE)
+    report = importer.kicad_to_proteus(source, tmp_path / "partial.pdsprj", TEMPLATE, placeholders=False)
     assert report["counts"]["placed"] == 6 and report["counts"]["skipped"] == 1
     assert report["skipped"][0]["ref"] == "U99"
     assert "No exact" in report["skipped"][0]["reason"]
@@ -251,3 +251,77 @@ def test_verifier_detects_merge_split_and_unused_pin_merges():
 def test_cannot_overwrite_source_or_template():
     with pytest.raises(ValueError, match="distinct paths"):
         importer.kicad_to_proteus(FIXTURE, TEMPLATE, TEMPLATE)
+
+
+@needs_proteus
+@pytest.mark.parametrize("pin_numbers,expected", [
+    (["1", "2", "4", "6"], "CONN-SIL6"),
+    ([str(n) for n in range(1, 17)], "CONN-DIL16"),
+    ([str(n) for n in range(1, 21)], "CONN-DIL20"),
+    ([str(n) for n in range(1, 36)], "CONN-DIL40"),
+])
+def test_placeholder_header_selection_preserves_pad_numbers(pin_numbers, expected):
+    entry = importer._placeholder_mapping(dict(part="UNKNOWN_IC"),
+                                        [dict(num=n) for n in pin_numbers], Library())
+    assert entry["device"] == expected
+    assert entry["pins"] == {n: n for n in pin_numbers}
+    assert "no simulation model" in entry["representation"]
+    assert entry["library"] == "CONNDVC"
+
+
+@needs_proteus
+def test_unknown_ic_placeholder_preserves_all_pin_groups(tmp_path):
+    tree = ET.parse(FIXTURE)
+    root = tree.getroot()
+    root.find("components").append(ET.fromstring('<comp ref="U99"><value>custom value</value><libsource lib="Custom" part="NOT_A_REAL_DEVICE_123"/></comp>'))
+    libpart = ET.SubElement(root.find("libparts"), "libpart", lib="Custom", part="NOT_A_REAL_DEVICE_123")
+    pins = ET.SubElement(libpart, "pins")
+    for number in ("1", "2", "3"):
+        ET.SubElement(pins, "pin", num=number, name="CUSTOM", type="passive")
+    for net, number in zip(root.findall("./nets/net"), ("1", "2", "3")):
+        ET.SubElement(net, "node", ref="U99", pin=number)
+    source = tmp_path / "placeholder.xml"
+    tree.write(source)
+    output = tmp_path / "placeholder.pdsprj"
+    report = importer.kicad_to_proteus(source, output, TEMPLATE)
+    assert report["counts"]["placed"] == 7
+    assert report["counts"]["placeholders"] == 1
+    assert report["counts"]["nets_reproduced"] == 5
+    assert report["verification"]["passed"] and not report["skipped"]
+    part = next(p for p in report["parts"] if p["ref"] == "U99")
+    assert part["placeholder"] and part["proteus_value"] == "NOT_A_REAL_DEVICE_123"
+    reopened = Circuit.open(output)
+    for index, number in enumerate(("1", "2", "3")):
+        assert {tuple(p) for p in report["nets"][index]["pins"]} in [set(n) for n in reopened.nets()]
+        assert ("U99", number) in map(tuple, report["nets"][index]["pins"])
+
+
+def test_cli_no_placeholders_option(monkeypatch, capsys):
+    captured = {}
+    def convert(*args, **kwargs):
+        captured.update(kwargs)
+        return {"counts": {"placeholders": 0}}
+    monkeypatch.setattr(importer, "kicad_to_proteus", convert)
+    assert importer.main([str(FIXTURE), "-o", "unused.pdsprj", "--template", str(TEMPLATE), "--no-placeholders"]) == 0
+    assert captured["placeholders"] is False
+
+
+@needs_proteus
+def test_only_isolated_declared_no_connect_pad_may_be_omitted(tmp_path):
+    tree = ET.parse(FIXTURE)
+    root = tree.getroot()
+    root.find("components").append(ET.fromstring('<comp ref="U99"><value>MAX31856</value><libsource lib="Sensor_Temperature" part="MAX31856"/></comp>'))
+    net = ET.SubElement(root.find("nets"), "net", code="6", name="unconnected-U99-DNC")
+    ET.SubElement(net, "node", ref="U99", pin="6", pinfunction="DNC", pintype="no_connect")
+    source = tmp_path / "nc.xml"
+    tree.write(source)
+    report = importer.kicad_to_proteus(source, tmp_path / "nc.pdsprj", TEMPLATE)
+    assert report["counts"]["placed"] == 7
+    assert report["counts"]["no_connect_nets_preserved"] == 1
+    assert report["counts"]["nets_reproduced"] == 5
+    assert report["counts"]["nets_accounted_for"] == 6
+    assert report["verification"]["passed"]
+    ET.SubElement(net, "node", ref="R1", pin="3")
+    tree.write(source)
+    report = importer.kicad_to_proteus(source, tmp_path / "bad_nc.pdsprj", TEMPLATE)
+    assert any(p["ref"] == "U99" and "Unresolved connected pins" in p["reason"] for p in report["skipped"])

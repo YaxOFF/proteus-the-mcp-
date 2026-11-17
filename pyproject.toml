@@ -28,6 +28,9 @@ proteus-mcp = "proteus_mcp.server:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+proteus_mcp = ["kicad_map.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["proteus: needs a real Proteus 8 install (slow, opens Proteus)"]

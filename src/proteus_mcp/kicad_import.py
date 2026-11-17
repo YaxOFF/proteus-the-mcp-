@@ -221,6 +221,38 @@ def sanitize_net_names(names) -> dict:
     return result
 
 
+def _placeholder_mapping(component, pins, library):
+    """Choose a verified CONNDVC header that exposes every numeric source pad."""
+    numbers = {p["num"] for p in pins}
+    if not numbers or any(not re.fullmatch(r"[1-9]\d*", number) for number in numbers):
+        raise ValueError("Placeholder requires positive numeric KiCad pin numbers")
+    needed = max(map(int, numbers))
+    candidates = []
+    for entry in library.search("CONN-", limit=1000):
+        match = re.fullmatch(r"CONN-(SIL|DIL)(\d+)", entry["name"])
+        if entry["library"] == "CONNDVC" and match and int(match[2]) >= needed:
+            candidates.append((int(match[2]), match[1] != "SIL", entry))
+    for capacity, _, entry in sorted(candidates, key=lambda item: item[:2]):
+        definition = library.get(entry["name"], "CONNDVC")
+        if numbers <= {p["name"] for p in definition["pins"]} and not definition["models"]:
+            return dict(device=entry["name"], library="CONNDVC", pins={n: n for n in sorted(numbers)},
+                        value="keep", source="placeholder", placeholder=True, capacity=capacity,
+                        representation="placeholder (connectivity only, no simulation model)",
+                        substitution=f"{component['part']}: placeholder (connectivity only, no simulation model)")
+    raise ValueError(f"No verified single connector placeholder supports pads through {needed}")
+
+
+def _package_no_connect_pins(library, entry):
+    """Read pads explicitly declared NC in the selected Proteus package."""
+    info = library.get(entry["device"], entry.get("library"))
+    result = set()
+    for line in info["pinouts"].get(info["package"], []):
+        match = re.fullmatch(r"\{NC\s*=\s*([A-Za-z0-9]+(?:\s*[,/]\s*[A-Za-z0-9]+)*)\}", line)
+        if match:
+            result.update(re.split(r"\s*[,/]\s*", match[1]))
+    return result
+
+
 def _ascii_value(value):
     value = value.replace("µ", "u").replace("μ", "u").replace("Ω", "Ohm")
     return "".join(c if 32 <= ord(c) < 127 else "?" for c in value)[:240] or "?"
@@ -322,12 +354,12 @@ def _write_report(report, path):
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def kicad_to_proteus(kicad_sch_or_xml, out_pdsprj, template, report_path=None) -> dict:
+def kicad_to_proteus(kicad_sch_or_xml, out_pdsprj, template, report_path=None, *, placeholders=True) -> dict:
     """Import into a new project and return a detailed, reopened-file audit report.
 
     Existing destinations may be replaced, but the input and template cannot be
-    overwritten. Failed pin/device mappings skip whole parts; source nets remain
-    separate and connect all surviving mapped endpoints.
+    overwritten. Unknown U-reference ICs use explicit connector black boxes by
+    default. Disable with placeholders=False. Other mapping failures skip parts.
     """
     source, output, template = map(lambda p: Path(p).resolve(), (kicad_sch_or_xml, out_pdsprj, template))
     report_path = Path(report_path).resolve() if report_path else output.with_suffix(".report.json")
@@ -341,20 +373,31 @@ def kicad_to_proteus(kicad_sch_or_xml, out_pdsprj, template, report_path=None) -
     circuit, library, table = Circuit(template_project=template), Library(), load_mapping()
     report = dict(input=str(source), output=str(output), template=str(template),
                   library_directory=str(library.directory),
-                  parts=[], skipped=[], warnings=[], net_name_map=sanitize_net_names(n["name"] for n in design["nets"]),
+                  parts=[], skipped=[], warnings=[], placeholders_enabled=placeholders,
+                  net_name_map=sanitize_net_names(n["name"] for n in design["nets"]),
                   nets=[], engine_recommendations=[],
                   limitations=["Layout is regenerated on one sheet grouped by source sheet path",
                                "Connectivity verification does not establish simulation or model equivalence",
-                               "Wheel distributors must include kicad_map.json as package data; packaging configuration is outside this change's allowed files"])
+                               "Placeholder ICs have no simulation model; unused connector pads remain isolated",
+                               "Only positive numeric pads supported by an installed single connector can use placeholders"])
     pin_counts = {c["ref"]: len(_part_pins(c, design)) for c in design["components"]}
     positions, placed, special, failed_devices = _layout(design["components"], pin_counts), {}, {}, {}
     owners = {(n["ref"], n["pin"]): net["name"] for net in design["nets"] for n in net["nodes"]}
+    singleton_nc = {(n["ref"], n["pin"]) for net in design["nets"] if len(net["nodes"]) == 1
+                    for n in net["nodes"] if n["pintype"] == "no_connect"}
     for component in design["components"]:
         ref = component["ref"]
         item = dict(component, kicad=_key(component), status="skipped")
         report["parts"].append(item)
         try:
-            entry = choose_mapping(component, table, library)
+            try:
+                entry = choose_mapping(component, table, library)
+            except ValueError as exc:
+                if not (placeholders and re.fullmatch(r"U\d+[A-Z0-9_]*", ref)
+                        and str(exc).startswith("No exact or conservative near")):
+                    raise
+                entry = _placeholder_mapping(component, _part_pins(component, design), library)
+                entry["reason"] = str(exc)
             item.update(mapping=entry)
             if entry.get("representation") in ("terminal", "drop", "terminal_only"):
                 item["status"] = entry["representation"]
@@ -376,6 +419,9 @@ def kicad_to_proteus(kicad_sch_or_xml, out_pdsprj, template, report_path=None) -
             proteus_pins = [dict(name=name, number=number) for name, number in circuit.templates[device]["pins"]]
             pins, missing = resolve_pins(_part_pins(component, design), proteus_pins, entry.get("pins"))
             required = {pin for (owner, pin) in owners if owner == ref}
+            nc_pins = (_package_no_connect_pins(library, entry) if missing else set())
+            omitted_nc = {pin for pin in missing if pin in nc_pins and (ref, pin) in singleton_nc}
+            required -= omitted_nc
             if required.intersection(missing):
                 raise ValueError(f"Unresolved connected pins: {sorted(required.intersection(missing))}")
             destinations = {}
@@ -384,11 +430,15 @@ def kicad_to_proteus(kicad_sch_or_xml, out_pdsprj, template, report_path=None) -
                 if dest in destinations and destinations[dest] != net:
                     raise ValueError(f"Proteus pin {dest} would merge distinct KiCad nets")
                 destinations[dest] = net
-            value = _ascii_value(component["value"]) if entry.get("value", "keep") == "keep" else device
+            value = (_ascii_value(component["part"]) if entry.get("placeholder") else
+                     _ascii_value(component["value"]) if entry.get("value", "keep") == "keep" else device)
             x, y = positions[ref]
             circuit.add(device, ref, value, x, y)
             item.update(status="placed", device=device, pins=pins, unmapped_unconnected_pins=missing,
+                        placeholder=entry.get("placeholder", False), package_no_connect_pins=sorted(omitted_nc),
                         proteus_value=value, position=[x, y], verified_proteus_pins=proteus_pins)
+            if entry.get("placeholder"):
+                item["representation"] = entry["representation"]
             placed[ref] = item
             if entry.get("substitution"):
                 report["warnings"].append(f"{ref}: {entry['substitution']}")
@@ -401,12 +451,15 @@ def kicad_to_proteus(kicad_sch_or_xml, out_pdsprj, template, report_path=None) -
     attached = set()
     for net in design["nets"]:
         name = report["net_name_map"][net["name"]]
-        endpoints, missing, terminals = set(), [], []
+        endpoints, missing, terminals, no_connect = set(), [], [], []
         kind = _terminal_kind(net["name"])
         for node in net["nodes"]:
             ref, pin = node["ref"], node["pin"]
             if ref in placed:
-                endpoints.add((ref, placed[ref]["pins"][pin]))
+                if pin in placed[ref]["package_no_connect_pins"]:
+                    no_connect.append(node)
+                else:
+                    endpoints.add((ref, placed[ref]["pins"][pin]))
             elif ref in special:
                 representation = special[ref]["status"]
                 if representation == "terminal_only":
@@ -417,6 +470,7 @@ def kicad_to_proteus(kicad_sch_or_xml, out_pdsprj, template, report_path=None) -
                 missing.append(node)
         item = dict(name=net["name"], proteus_name=name, pins=[list(p) for p in sorted(endpoints)], missing_nodes=missing,
                     fully_placed=not missing and not terminals and bool(endpoints),
+                    preserved_no_connect_nodes=no_connect,
                     source_pin_count=len(net["nodes"]), terminal_only_nodes=terminals)
         report["nets"].append(item)
         # Single-source-pin nets are deliberately left unconnected.
@@ -453,10 +507,16 @@ def kicad_to_proteus(kicad_sch_or_xml, out_pdsprj, template, report_path=None) -
         raise
     fully = [n for n in report["nets"] if n["fully_placed"]]
     reproduced = sum(n["verified"] for n in fully)
+    preserved_nc = sum(bool(n["preserved_no_connect_nodes"]) for n in report["nets"])
     report["counts"] = dict(kicad_parts=len(design["components"]), placed=len(placed),
                             skipped=len(report["skipped"]), handled_symbols=len(special),
+                            placeholders=sum(p["placeholder"] for p in placed.values()),
+                            mapped_parts=sum(not p["placeholder"] for p in placed.values()),
                             nets=len(design["nets"]), nets_fully_placed=len(fully),
                             nets_reproduced=reproduced,
+                            no_connect_nets_preserved=preserved_nc,
+                            nets_accounted_for=reproduced + preserved_nc,
+                            accounted_net_ratio=(reproduced + preserved_nc) / len(design["nets"]) if design["nets"] else 1.0,
                             multi_pin_nets_reproduced=sum(n["verified"] and n["source_pin_count"] > 1 for n in fully),
                             nets_with_surviving_pins=sum(bool(n["pins"]) for n in report["nets"]),
                             nets_surviving_verified=sum(n["verified"] for n in report["nets"]),
@@ -475,9 +535,11 @@ def main(argv=None) -> int:
     parser.add_argument("-o", "--output", type=Path, required=True)
     parser.add_argument("--template", type=Path, required=True)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--no-placeholders", action="store_true", help="Skip unknown ICs instead of placing connectivity-only headers")
     args = parser.parse_args(argv)
     try:
-        report = kicad_to_proteus(args.source, args.output, args.template, args.report)
+        report = kicad_to_proteus(args.source, args.output, args.template, args.report,
+                                 placeholders=not args.no_placeholders)
     except (OSError, ValueError, RuntimeError, ET.ParseError, subprocess.TimeoutExpired) as exc:
         parser.exit(1, f"Import failed: {exc}\n")
     print(json.dumps(report["counts"], indent=2))
