@@ -2,6 +2,7 @@
 import ctypes as c
 from ctypes import wintypes as w
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -81,7 +82,9 @@ def parse_sdf(text):
                 for _ in range(pin_count):
                     endpoint = fields(lines[pos])
                     pos += 1
-                    if len(endpoint) == 2 and endpoint[1] in {"LBL", "PT", "PR", "IT", "OT", "BT"}:
+                    # Two-field endpoints are terminals/labels (LBL, PT, PR, IT, OT, BT, and on
+                    # 8.13 also GT for named wire labels such as ['NA', 'GT']).
+                    if len(endpoint) == 2 and re.fullmatch(r"[A-Z]{2,3}", endpoint[1]):
                         ref, kind = endpoint
                         terminals.append(dict(name=ref, kind=kind))
                         continue
@@ -109,10 +112,14 @@ class Session:
         executable = Path(executable).resolve(strict=True)
         if self.project.suffix.lower() != ".pdsprj" or executable.name.upper() != "PDS.EXE":
             raise ValueError("Expected a .pdsprj project and PDS.EXE")
-        startup = subprocess.STARTUPINFO()
-        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startup.wShowWindow = 0
-        self.process = subprocess.Popen([str(executable), str(self.project)], startupinfo=startup)
+        if os.environ.get("PROTEUS_MCP_VISIBLE") == "1":
+            startup = subprocess.STARTUPINFO()
+            startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startup.wShowWindow = 0
+            self.process = subprocess.Popen([str(executable), str(self.project)], startupinfo=startup)
+        else:
+            # Default: run on a private desktop so no window or taskbar icon ever appears.
+            self.process = native.HiddenProcess([executable, self.project], cwd=str(self.project.parent))
         self.pid = self.process.pid
         def launched():
             for row in native.windows(self.pid):

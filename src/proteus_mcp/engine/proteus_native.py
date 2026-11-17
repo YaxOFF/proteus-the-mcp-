@@ -61,7 +61,101 @@ def windows(pid):
         return True
 
     u.EnumWindows(visit, 0)
+    if _desktop:
+        u.EnumDesktopWindows(_desktop, visit, 0)
     return rows
+
+
+# --- Hidden desktop -------------------------------------------------------
+# Proteus shows its own main window and taskbar button even when started with
+# SW_HIDE. Starting it on a separate (never switched-to) desktop of the same
+# window station keeps it fully invisible, while PostMessage/SendMessage,
+# menus, the clipboard and process-memory reads keep working as usual.
+# Set PROTEUS_MCP_VISIBLE=1 to launch on the normal desktop for debugging.
+DESKTOP_NAME = "proteus_mcp"
+_desktop = None
+
+u.CreateDesktopW.argtypes = (w.LPCWSTR, w.LPCWSTR, c.c_void_p, w.DWORD, w.DWORD, c.c_void_p)
+u.CreateDesktopW.restype = w.HANDLE
+u.EnumDesktopWindows.argtypes = (w.HANDLE, CALLBACK, w.LPARAM)
+
+
+def hidden_desktop():
+    """Create (or open) the private desktop once and keep its handle alive."""
+    global _desktop
+    if _desktop is None:
+        handle = u.CreateDesktopW(DESKTOP_NAME, None, None, 0, 0x10000000, None)  # GENERIC_ALL
+        if not handle:
+            raise c.WinError(c.get_last_error())
+        _desktop = handle
+    return _desktop
+
+
+class _STARTUPINFO(c.Structure):
+    _fields_ = [("cb", w.DWORD), ("lpReserved", w.LPWSTR), ("lpDesktop", w.LPWSTR),
+                ("lpTitle", w.LPWSTR), ("dwX", w.DWORD), ("dwY", w.DWORD),
+                ("dwXSize", w.DWORD), ("dwYSize", w.DWORD), ("dwXCountChars", w.DWORD),
+                ("dwYCountChars", w.DWORD), ("dwFillAttribute", w.DWORD), ("dwFlags", w.DWORD),
+                ("wShowWindow", w.WORD), ("cbReserved2", w.WORD), ("lpReserved2", c.c_void_p),
+                ("hStdInput", w.HANDLE), ("hStdOutput", w.HANDLE), ("hStdError", w.HANDLE)]
+
+
+class _PROCESS_INFORMATION(c.Structure):
+    _fields_ = [("hProcess", w.HANDLE), ("hThread", w.HANDLE),
+                ("dwProcessId", w.DWORD), ("dwThreadId", w.DWORD)]
+
+
+k.CreateProcessW.argtypes = (w.LPCWSTR, w.LPWSTR, c.c_void_p, c.c_void_p, w.BOOL, w.DWORD,
+                             c.c_void_p, w.LPCWSTR, c.POINTER(_STARTUPINFO),
+                             c.POINTER(_PROCESS_INFORMATION))
+k.WaitForSingleObject.argtypes = (w.HANDLE, w.DWORD)
+k.GetExitCodeProcess.argtypes = (w.HANDLE, c.POINTER(w.DWORD))
+k.TerminateProcess.argtypes = (w.HANDLE, w.UINT)
+
+
+class HiddenProcess:
+    """Minimal subprocess.Popen look-alike for a process started on the hidden desktop."""
+
+    def __init__(self, args, cwd=None):
+        import subprocess
+        self.args = [str(a) for a in args]
+        info, proc = _STARTUPINFO(), _PROCESS_INFORMATION()
+        info.cb = c.sizeof(info)
+        info.lpDesktop = DESKTOP_NAME
+        info.dwFlags = 1  # STARTF_USESHOWWINDOW
+        info.wShowWindow = 0
+        cmdline = c.create_unicode_buffer(subprocess.list2cmdline(self.args))
+        hidden_desktop()
+        if not k.CreateProcessW(None, cmdline, None, None, False, 0, None, cwd,
+                                c.byref(info), c.byref(proc)):
+            raise c.WinError(c.get_last_error())
+        k.CloseHandle(proc.hThread)
+        self._handle, self.pid, self.returncode = proc.hProcess, proc.dwProcessId, None
+
+    def poll(self):
+        if self.returncode is None and k.WaitForSingleObject(self._handle, 0) == 0:
+            code = w.DWORD()
+            k.GetExitCodeProcess(self._handle, c.byref(code))
+            self.returncode = code.value
+        return self.returncode
+
+    def wait(self, timeout=None):
+        import subprocess
+        ms = 0xFFFFFFFF if timeout is None else int(timeout * 1000)
+        if k.WaitForSingleObject(self._handle, ms) != 0:
+            raise subprocess.TimeoutExpired(self.args, timeout)
+        return self.poll()
+
+    def terminate(self):
+        if self.poll() is None:
+            k.TerminateProcess(self._handle, 1)
+
+    kill = terminate
+
+    def __del__(self):
+        if getattr(self, "_handle", None):
+            k.CloseHandle(self._handle)
+            self._handle = None
 
 
 def menus(menu, prefix=""):
