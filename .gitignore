@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+*.egg-info/
+# Labcenter's copyrighted VSM header: never commit it
+bridge/sdk/
+# compiled bridge goes to GitHub Releases, not the repo
+bridge/*.DLL
+bridge/*.dll
+bridge/*.obj
+bridge/*.exp
+bridge/*.lib
+# local test output
+work/
+*.sdf
