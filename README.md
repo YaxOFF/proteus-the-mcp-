@@ -6,6 +6,8 @@ connectivity. The server exposes 41 tools over stdio.
 
 [العربية](README.ar.md)
 
+<!-- mcp-name: io.github.mahmoud-elghamry/proteus-mcp -->
+
 **Status: experimental Windows integration.** The complete MCP-to-Proteus flow
 has been tested locally with Proteus 8.13.31525.0 and Python 3.10.11. This is
 not a guarantee for every Proteus build or project format. No Proteus licence,
@@ -51,6 +53,18 @@ If using a virtual environment instead, install inside it and configure your
 client to use that environment's Python executable. A virtual environment's
 absolute executable path is necessarily local configuration, not a path shipped
 in this project's code.
+
+### As a Claude Code plugin
+
+The repository is also a Claude Code plugin marketplace. The plugin bundles the MCP server
+(started with `uvx`, so install [uv](https://docs.astral.sh/uv/) first), a `proteus` skill that
+teaches the assistant the right call order and honesty rules, and the commands
+`/proteus:import-kicad` and `/proteus:check-circuit`:
+
+```text
+/plugin marketplace add mahmoud-elghamry/proteus-mcp
+/plugin install proteus@proteus-mcp
+```
 
 ### Optional live probes
 
@@ -128,6 +142,13 @@ The server holds one offline circuit and one owned Proteus session at a time.
 Work on copies of original projects. Saving the live app does not refresh the
 offline circuit automatically; call `project_open` again before further editing
 if you need to keep live property changes.
+
+To review a design, with Proteus open:
+
+- `export_image(path, format="png")` exports the sheet through Proteus's own export
+  (png at 100/200/300 DPI, svg, or pdf with `all_sheets=true`); the assistant can read the PNG.
+- `run_erc()` runs Proteus's Electrical Rules Check and returns errors and warnings separately.
+- `set_sheet_size("A0")` picks the sheet size (A4..A0).
 
 For probes, add `add_probe` before saving, then open and start simulation:
 
