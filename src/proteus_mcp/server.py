@@ -461,8 +461,61 @@ def add_probe(ref: str, x_mm: float, y_mm: float, kind: str = "digital", pins: l
     return {"ref": ref, "kind": kind, "pins": pins}
 
 
+_EVENT_LOG = []  # every digital edge read from the probe (EVENTS drains the bridge)
+
+
+def _drain_events():
+    if W.session is not None:
+        try:
+            _EVENT_LOG.extend(_bridge().events())
+        except Exception:  # bridge gone (simulation stopped): keep what was recorded
+            pass
+    return list(_EVENT_LOG)
+
+
+class _NamedBridge:
+    """Bridge view that speaks probe signal names (e.g. LED) instead of probe pin numbers."""
+
+    def __init__(self, client, maps):
+        self._client, self._maps = client, maps
+        self._to_pin = {name: pin for pin, name in maps["digital"].items()}
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
+
+    def _named(self, values, kind="digital"):
+        # Keep the probe pin numbers too, so callers reading "1", "2", ... keep working.
+        named = {self._maps[kind][pin]: value for pin, value in values.items() if pin in self._maps[kind]}
+        return {**values, **named}
+
+    def names(self, values, kind="digital"):
+        """Only the named signals: {name: value}."""
+        return {self._maps[kind][pin]: value for pin, value in values.items() if pin in self._maps[kind]}
+
+    def read(self):
+        """Digital levels keyed by signal name and by probe pin number."""
+        reading = self._client.read()
+        return dict(reading, pins=self._named(reading["pins"]))
+
+    def aread(self):
+        reading = self._client.aread()
+        return dict(reading, volts=self._named(reading["volts"], "analog"))
+
+    def set(self, pin, value):
+        return self._client.set(self._to_pin.get(pin, pin), value)
+
+    def events(self):
+        return [dict(e, pin=self._maps["digital"].get(e["pin"], e["pin"])) for e in self._client.events()]
+
+
 def _bridge():
-    """Connect lazily to the probe bridge of the live session."""
+    """Connect lazily to the probe bridge of the live session (signal names, not pin numbers)."""
+    from .probe import signal_maps
+    maps = signal_maps(W.circuit) if W.circuit is not None else {"digital": {}, "analog": {}}
+    return _NamedBridge(_raw_bridge(), maps)
+
+
+def _raw_bridge():
     if W.session is None:
         raise WorkspaceError("Proteus is not open on a project", "call open_in_proteus, then sim_start")
     if W.bridge is not None and not getattr(W.bridge, "connected", True):
@@ -477,9 +530,12 @@ def _bridge():
 
 @tool
 def probe_read():
-    """[probe] Read the current digital probe pin levels: {t, pins: {name: '0'|'1'|'Z'|'X'}}.
+    """[probe] Read the current digital probe pin levels: {reading: {t, pins: {pin number: '0'|'1'|'Z'|'X'}},
+    signals: {signal name: level}}.
     Needs a running simulation with a digital probe."""
-    return {"reading": _bridge().read()}
+    bridge = _bridge()
+    reading = bridge._client.read()
+    return {"reading": reading, "signals": bridge.names(reading["pins"])}
 
 
 @tool
@@ -512,13 +568,17 @@ def probe_run():
 @tool
 def probe_events():
     """[probe] Return recorded pin transitions: [{t, pin, value}]."""
-    return {"events": _bridge().events()}
+    events = _bridge().events()
+    _EVENT_LOG.extend(events)
+    return {"events": events}
 
 
 @tool
 def probe_analog():
     """[probe] Read analog probe voltages: {t, volts: {name: volts}}."""
-    return {"reading": _bridge().aread()}
+    bridge = _bridge()
+    reading = bridge._client.aread()
+    return {"reading": reading, "signals": bridge.names(reading["volts"], "analog")}
 
 
 # ---------------------------------------------------------------- import
@@ -585,6 +645,109 @@ def set_sheet_size(size: str):
     Call close_proteus(save=true) to keep it."""
     from .exports import set_sheet_size as apply
     return {"size": apply(W.need_session(), size)}
+
+
+# ---------------------------------------------------------------- waveforms
+@tool
+def probe_clear_events():
+    """[probe] Forget recorded probe edges (start a fresh measurement window)."""
+    _drain_events()
+    _EVENT_LOG.clear()
+    return {"cleared": True}
+
+
+@tool
+def export_vcd(path: str):
+    """[probe] Write every probe edge recorded so far to a VCD file (open it in GTKWave).
+    Run the simulation (e.g. probe_step) first; probe_clear_events starts a new window."""
+    from .waveform import write_vcd
+    events = _drain_events()
+    if not events:
+        raise WorkspaceError("No probe events recorded", "start the simulation and probe_step first")
+    write_vcd(events, path)
+    return {"path": str(Path(path).resolve()), "events": len(events),
+            "pins": sorted({e["pin"] for e in events})}
+
+
+@tool
+def measure_signal(pin: str):
+    """[probe] Frequency, period, duty cycle and high/low times of a probe pin, from the edges
+    recorded so far (use probe_clear_events, then probe_step, for a clean window)."""
+    from .waveform import measure
+    return {"pin": pin, "measurement": measure(_drain_events(), pin)}
+
+
+@tool
+def measure_delay(pin_a: str, pin_b: str, edge_a: str = "any", edge_b: str = "any"):
+    """[probe] Seconds from the first edge_a ('rise'|'fall'|'any') on pin_a to the first edge_b on
+    pin_b after it, from the recorded probe edges."""
+    from .waveform import delay
+    return {"delay_s": delay(_drain_events(), pin_a, edge_a, pin_b, edge_b)}
+
+
+# ---------------------------------------------------------------- testbench
+@tool
+def run_testbench(bench, vcd_path: str = None):
+    """[probe] Run a pass/fail testbench against the running simulation. bench is a dict or a .json
+    path: {"name", "steps": [{"set": {"PIN": "1"}}, {"run": 0.001}, {"expect": {"PIN": "0"}},
+    {"expect_analog": {"PIN": {"min": 4.5, "max": 5.5}}}, {"expect_frequency": {"pin": "P",
+    "min_hz": 900, "max_hz": 1100}}, {"expect_duty": {...}}, {"wait_for": {"pin": "P", "value": "1",
+    "timeout": 0.01, "poll": 0.0001}}]}. Failed expectations are reported, not raised.
+    Needs sim_start and a probe on the named pins."""
+    import json as _json
+    from .testbench import run_testbench as run
+    if isinstance(bench, str):
+        bench = _json.loads(Path(bench).read_text(encoding="utf-8"))
+    _drain_events()
+    return run(_bridge(), bench, vcd_path=vcd_path)
+
+
+# ---------------------------------------------------------------- firmware
+@tool
+def firmware_build(sources: list, mcu: str, f_cpu: int, out_dir: str, include_dirs: list = None,
+                   defines: list = None):
+    """[firmware] Compile AVR C sources with avr-gcc (the copy bundled with Proteus is found
+    automatically) to .elf/.hex. mcu is a Proteus device or gcc name (ATMEGA328P / atmega328p);
+    f_cpu in Hz. Returns hex path, flash/RAM bytes and warnings; compiler errors are returned in
+    the error hint."""
+    from .firmware import build
+    return build(list(sources), mcu, int(f_cpu), out_dir, include_dirs=tuple(include_dirs or ()),
+                 defines=tuple(defines or ()))
+
+
+@tool
+def firmware_load(ref: str, hex_path: str, clock_hz: int = None):
+    """[firmware] Point microcontroller `ref` at a .hex file (PROGRAM) and optionally set its clock.
+    With Proteus open (simulation stopped) it changes the live project; otherwise the offline
+    circuit (then save_project). Typical loop: firmware_build -> firmware_load -> sim_start ->
+    probe/testbench. For AVR parts clock_hz also clears the CLKDIV8 fuse so the
+    simulated CPU really runs at clock_hz."""
+    from .firmware import load_program
+    device = next((p["device"] for p in W.need_circuit().components() if p["ref"] == ref), "")
+    # Proteus AVR models default to CLKDIV8=0 (fuse programmed: clock / 8). An explicit clock means
+    # the effective CPU clock, so the divider is switched off.
+    extra = {"CLKDIV8": "1"} if clock_hz and device.upper().startswith(("ATMEGA", "ATTINY", "AT90")) else {}
+    target = W.session if W.session is not None else None
+
+    def apply(obj):
+        result = load_program(obj, ref, hex_path, clock_hz)
+        if extra:
+            obj.set_properties(ref, **extra)
+            result["properties"].update(extra)
+        return result
+    if target is not None:
+        return apply(W.need_session())
+    return _edit(apply)
+
+
+# ---------------------------------------------------------------- diagnostics
+@tool
+def doctor():
+    """[setup] Check this machine: Proteus install and version, library, template, probe DLL
+    (32-bit), KiCad CLI, AVR toolchain, leftover PDS.EXE processes, MCP SDK. Each check has a fix."""
+    from .doctor import diagnose
+    return diagnose()
+
 
 def main():
     mcp.run()

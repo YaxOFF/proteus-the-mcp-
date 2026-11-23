@@ -45,7 +45,15 @@ user-authorized public GitHub repository `mahmoud-elghamry/proteus-mcp`.
   (AD7124-8, TMP126/ADT7310, ISO7761, LM5164, ADM2587E, ...); block 1437x972 mm exceeds A0.
 - Claude Code plugin: `.claude-plugin/plugin.json`, `marketplace.json`, `.mcp.json` (uvx from git),
   `skills/proteus/SKILL.md`, `commands/`; `claude plugin validate .` passes.
-- Delegated to Codex (not yet reviewed): `firmware.py`, `waveform.py`, `testbench.py`.
+- Codex-written, reviewed and integrated: `firmware.py`, `waveform.py`, `testbench.py`, `doctor.py`
+  (+ tests). Server now has 52 tools: firmware_build/load, run_testbench, measure_signal,
+  measure_delay, export_vcd, probe_clear_events, doctor.
+- Live end-to-end (work/fw): blink.c built with Proteus-bundled avr-gcc for ATMEGA328P @ 8 MHz,
+  loaded, simulated; measured 99.99 Hz / 50 % duty; testbench 5/5 passed; VCD written.
+  Review fixes: AVR CLKDIV8 fuse defaults to programmed (clock/8) -> cleared when clock_hz given;
+  measure() ignored the first observation as a pulse; probe signal names stored on the part
+  (`SIGNALS`) and translated by the server (raw pin-number readings unchanged).
+- Offline suite: 190 passed. Live suite (-m proteus) on Proteus 8.13: 5 passed (incl. stdio MCP e2e).
 
 ## Supported boundary
 

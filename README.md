@@ -2,7 +2,7 @@
 
 Let an MCP-compatible assistant create, inspect and edit Labcenter Proteus 8
 schematics, control simulations, read digital/analog probes, and import KiCad
-connectivity. The server exposes 41 tools over stdio.
+connectivity. The server exposes 52 tools over stdio.
 
 [العربية](README.ar.md)
 
@@ -163,6 +163,25 @@ pipe name; concurrent MCP servers using that same pipe are not isolated.
 
 Tool results include `ok`; errors include `error` and an actionable `hint`. A
 successful MCP transport response alone does not mean the operation succeeded.
+
+## Firmware, testbenches and waveforms
+
+1. `firmware_build(sources, mcu, f_cpu, out_dir)` compiles AVR C with avr-gcc (the copy that ships
+   with Proteus is found automatically) and returns the .hex, flash/RAM use and warnings.
+2. `firmware_load(ref, hex_path, clock_hz)` sets the microcontroller's PROGRAM and CLOCK. For AVR
+   parts it also clears the CLKDIV8 fuse, which Proteus programs by default (clock / 8).
+3. Add a probe on the pins to watch with friendly names, e.g. `add_probe("J1", 80, 0, "digital",
+   {"LED": "U1.PB5/SCK/PCINT5"})`. Readings, events and testbenches then use `LED`.
+4. `run_testbench(bench)` runs set / run / expect / expect_analog / expect_frequency /
+   expect_duty / wait_for steps against the live simulation and reports pass/fail per step.
+5. `measure_signal(pin)`, `measure_delay(a, b)` and `export_vcd(path)` (GTKWave) work on the
+   recorded probe edges; `probe_clear_events` starts a new window.
+
+`doctor` checks Proteus, library, template, probe DLL bitness, KiCad, avr-gcc and leftover
+processes, with a fix for every problem.
+
+Verified on Proteus 8.13: a blink program built for ATmega328P at 8 MHz was loaded, simulated and
+measured at 99.99 Hz / 50 % duty, and its testbench passed.
 
 ## KiCad import and simulation models
 

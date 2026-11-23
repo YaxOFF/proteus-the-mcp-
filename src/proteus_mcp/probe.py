@@ -98,6 +98,24 @@ def _properties(kind, pin_names, dll, pipe, extra):
     return props
 
 
+def signal_maps(circuit):
+    """{'digital': {pin: name}, 'analog': {pin: name}} from probe parts' SIGNALS properties.
+
+    The bridge drives the first digital probe; analog readings aggregate analog probes."""
+    maps = {"digital": {}, "analog": {}}
+    for part in circuit.components():
+        props = part.get("properties", {})
+        if "SIGNALS" not in props or "MODDLL" not in props:
+            continue
+        kind = "digital" if "DIGITAL" in props.get("PRIMITIVE", "").upper() else "analog"
+        if kind == "digital" and maps["digital"]:
+            continue
+        for item in props["SIGNALS"].split(","):
+            name, _, pin = item.partition("=")
+            maps[kind].setdefault(pin, name)
+    return maps
+
+
 def _normalise(pins):
     """``{"CLK": "U1.CLK"}`` or ``["U1.CLK", "U1.Q"]`` (signal name = endpoint) -> ordered dict."""
     if isinstance(pins, dict):
@@ -164,6 +182,11 @@ def add_probe(circuit, ref, x, y, kind="digital", pins=(), *, dll=None, pipe="pr
     size = next(n for n in SIL_SIZES if n >= len(pins))
     device = f"CONN-SIL{size}"
     names = [str(i) for i in range(1, len(pins) + 1)]
+    for signal in pins:
+        if not re.fullmatch(r"[!-~]+", str(signal)) or set(str(signal)) & set(",={}"):
+            raise ValueError(f"probe signal name {signal!r}: printable ASCII without spaces, ',', '=' or braces")
+    # Signal names are kept on the part so a reopened project still knows them.
+    properties = dict(properties, SIGNALS=",".join(f"{s}={n}" for s, n in zip(pins, names)))
     props = _properties(kind, names, dll, pipe, properties)
     if device not in circuit.templates:
         circuit.import_device(device, LIBRARY)
