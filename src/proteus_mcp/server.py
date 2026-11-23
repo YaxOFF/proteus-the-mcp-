@@ -534,8 +534,57 @@ def import_kicad(kicad_sch: str, out_pdsprj: str, placeholders: bool = True):
     report_path = str(Path(out_pdsprj).with_suffix(".report.json"))
     report = kicad_to_proteus(kicad_sch, out_pdsprj, _default_template(), report_path=report_path,
                              placeholders=bool(placeholders))
-    return {"out": out_pdsprj, "report_path": report_path, "report": report}
+    sheet = report.get("sheet", {})
+    if sheet.get("size") and sheet["size"] != "A4":
+        # The sheet size is a Proteus-side setting: apply it in a hidden Proteus and save.
+        from .engine import Session
+        from .exports import set_sheet_size
+        session = Session(out_pdsprj)
+        try:
+            set_sheet_size(session, sheet["size"])
+            session.save()
+        finally:
+            session.close(discard=True)
+    summary = {k: report.get(k) for k in ("counts", "sheet", "skipped", "warnings", "simulation",
+                                          "verification", "limitations")}
+    return {"out": out_pdsprj, "report_path": report_path, "report": summary,
+            "note": "Full per-part/per-net report is in report_path."}
 
+
+# ---------------------------------------------------------------- review
+@tool
+def export_image(path: str, format: str = "png", all_sheets: bool = False, dpi: int = 100):
+    """[live] Export the schematic as an image from Proteus itself: png (for you to look at),
+    svg or pdf (all_sheets=true exports every sheet to one PDF). dpi (png only): 100, 200 or 300;
+    use 200+ for small sheets or to zoom in. The file must not exist yet.
+    Needs open_in_proteus. Returns the written path; read a PNG to see the circuit."""
+    from .exports import export_graphics
+    if int(dpi) not in (100, 200, 300):
+        raise ValueError("dpi must be 100, 200 or 300")
+    out = export_graphics(W.need_session(), path, format, all_sheets=bool(all_sheets), fit=False, dpi=dpi)
+    return {"path": str(out), "bytes": out.stat().st_size}
+
+
+@tool
+def run_erc(report_path: str = None):
+    """[live] Run Proteus's Electrical Rules Check. Returns {ok, errors, warnings} and saves the full
+    report (default: next to the project as <name>.erc.txt, replaced if it exists). Needs open_in_proteus."""
+    from .exports import erc
+    session = W.need_session()
+    target = Path(report_path) if report_path else session.project.with_suffix(".erc.txt")
+    if not report_path and target.exists():
+        target.unlink()
+    result = erc(session, target)
+    return {"report_path": str(target), "ok": result["ok"], "errors": result["errors"],
+            "warnings": result["warnings"]}
+
+
+@tool
+def set_sheet_size(size: str):
+    """[live] Set the current sheet size (A4, A3, A2, A1 or A0) in the live Proteus project.
+    Call close_proteus(save=true) to keep it."""
+    from .exports import set_sheet_size as apply
+    return {"size": apply(W.need_session(), size)}
 
 def main():
     mcp.run()

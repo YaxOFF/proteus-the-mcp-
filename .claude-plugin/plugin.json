@@ -1,0 +1,10 @@
+{
+  "name": "proteus",
+  "version": "0.2.0",
+  "description": "Draw, import (KiCad), check, export and simulate Labcenter Proteus 8 projects from Claude, with a hidden Proteus and a live simulation probe.",
+  "author": { "name": "Mahmoud Elghamry" },
+  "homepage": "https://github.com/mahmoud-elghamry/proteus-mcp",
+  "repository": "https://github.com/mahmoud-elghamry/proteus-mcp",
+  "license": "MIT",
+  "keywords": ["proteus", "eda", "simulation", "kicad", "mcp", "electronics"]
+}

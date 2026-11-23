@@ -40,3 +40,10 @@
    is broader. Current configuration is local and environment-based.
 
 These are limits and future work, not features claimed as complete.
+
+- Large imports (thermo24, 459 parts) do not fit one A0 sheet; parts outside the border simulate but
+  are cut from `export_image`. Next: split into several sheets or rotate/condense passives.
+- thermo24 cannot be simulated end-to-end: AD7124-8, TMP126, ISO7761 and others have no Proteus
+  model. Planned: probe-driven "virtual chips" (SPI slave in MCPBRIDGE + Python register model).
+- `export_image(fit=True)` (select-all + marked area) did not enlarge the picture on 8.13; the tool
+  uses the sheet scope.

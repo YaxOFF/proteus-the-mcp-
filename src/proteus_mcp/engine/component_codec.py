@@ -3,6 +3,7 @@
 Imports real installed device definitions and preserves recognized existing
 geometry. Unsupported objects fail before writing; no GUI is used by this codec.
 """
+import contextlib
 import copy
 import hashlib
 import os
@@ -544,8 +545,25 @@ class Circuit:
         template['properties'] = _value_properties(template['properties'], part['value'])
         return template
 
+    @contextlib.contextmanager
+    def batch(self):
+        """Defer whole-sheet validation until the block ends (bulk edits such as imports).
+
+        Each edit is still applied in order; the complete sheet is encoded once on exit and any
+        error is raised there, so callers should treat the block as all-or-nothing."""
+        outer = getattr(self, "_deferred", False)
+        self._deferred = True
+        try:
+            yield self
+        finally:
+            self._deferred = outer
+        if not outer:
+            self._validate(self._parts, self._connections)
+
     def _validate(self, parts, connections, terminals=None):
         from .net_objects import encode_net_body
+        if getattr(self, "_deferred", False):
+            return
         resolved, objects = [], []
         for index, part in enumerate(parts, 1):
             template = self._template(part)

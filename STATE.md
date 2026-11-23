@@ -30,6 +30,23 @@ user-authorized public GitHub repository `mahmoud-elghamry/proteus-mcp`.
 - Published file set checked: no SDK header, DLL, Proteus project, `work/`
   artifact or personal path. `MCPBRIDGE.DLL` is attached to the GitHub release.
 
+## 0.2.0 work in progress (2026-11-23)
+
+- New live tools `export_image` (png/svg/pdf via Proteus's own export dialogs), `run_erc`
+  (Proteus Electrical Rules Check, report saved and parsed), `set_sheet_size` (A4..A0). 44 tools.
+  Verified on 8.13 with `work/menus/try_exports.py` (SVG/PDF/PNG written, ERC parsed).
+- KiCad importer: compact measured shelf-pack layout centred on the sheet and sheet-size choice
+  (was a 1.2 m x 6.5 m grid that left the picture empty); `Circuit.batch()` defers whole-sheet
+  validation (8ch import 6 min -> 27 s); pad-number fallback refused for named pins on multi-pin
+  parts (TQFP-44 ATmega1284P had been mapped by DIP-40 numbers); pad suffix (`PB1_41`) stripped;
+  maps for 2N7002, G6K-2 (RELAY2P, pinout from KiCad symbol), SM712/mounting holes dropped with notes.
+- 8ch: 202/202 parts, 163/163 nets accounted, fits A0. 24ch (`hardware/24ch/thermo24`):
+  459/470 placed (11 holes/TVS dropped), 286/286 nets reproduced, 20 placeholder ICs
+  (AD7124-8, TMP126/ADT7310, ISO7761, LM5164, ADM2587E, ...); block 1437x972 mm exceeds A0.
+- Claude Code plugin: `.claude-plugin/plugin.json`, `marketplace.json`, `.mcp.json` (uvx from git),
+  `skills/proteus/SKILL.md`, `commands/`; `claude plugin validate .` passes.
+- Delegated to Codex (not yet reviewed): `firmware.py`, `waveform.py`, `testbench.py`.
+
 ## Supported boundary
 
 See `ISSUES.md`. Windows and a compatible installed/licensed Proteus are required.

@@ -1,0 +1,12 @@
+{
+  "name": "proteus-mcp",
+  "owner": { "name": "Mahmoud Elghamry" },
+  "metadata": { "description": "Proteus 8 automation plugin for Claude Code" },
+  "plugins": [
+    {
+      "name": "proteus",
+      "source": "./",
+      "description": "Proteus 8 automation for Claude: KiCad import, schematic images, ERC, simulation and a live probe."
+    }
+  ]
+}

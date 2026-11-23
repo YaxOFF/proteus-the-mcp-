@@ -130,6 +130,15 @@ def _function(name):
     return re.sub(r"[~{}$\s]", "", name).casefold()
 
 
+def _number_fallback_ok(function, proteus_pins):
+    """Pad-number matching is only safe for anonymous pins or small parts.
+
+    A named signal on a multi-pin IC (e.g. PB1 on a TQFP-44 vs a DIP-40 model) must match by name;
+    matching by number there would silently wire the wrong pin."""
+    anonymous = not function or re.fullmatch(r"(pin_?)?\d+|~|[ak+-]|in|out|gnd|vcc", function)
+    return bool(anonymous) or len(proteus_pins) <= 8
+
+
 def resolve_pins(kicad_pins, proteus_pins, explicit=None) -> tuple[dict, list]:
     """Resolve explicit maps, then unique signal names/aliases, then pad numbers.
 
@@ -147,10 +156,12 @@ def resolve_pins(kicad_pins, proteus_pins, explicit=None) -> tuple[dict, list]:
                 matches = [p for p in proteus_pins if str(target) in p.get("number", "").split("/")]
         else:
             function = _function(pin.get("name", ""))
+            # Generated symbols often suffix the pad ("PB1_41", "VCC_17"); drop it.
+            function = re.sub(rf"_{re.escape(number.casefold())}$", "", function)
             matches = [p for p in proteus_pins if function and _function(p["name"]) == function]
             if not matches and function:
                 matches = [p for p in proteus_pins if function in _function(p["name"]).split("/")]
-            if len(matches) != 1:
+            if len(matches) != 1 and _number_fallback_ok(function, proteus_pins):
                 matches = [p for p in proteus_pins if number in p.get("number", "").split("/")]
         if len(matches) == 1:
             mapping[number] = matches[0]["name"]
@@ -294,6 +305,78 @@ def _layout(components, pin_counts):
     return positions
 
 
+MM = 100000  # native units per millimetre
+CHAR = 140000  # label character width (~2.1 mm font measured from Proteus SVG export)
+SHEETS = (("A4", 297, 210), ("A3", 420, 297), ("A2", 594, 420), ("A1", 841, 594), ("A0", 1189, 841))
+
+
+def _extent(circuit, ref, named):
+    """Native bounding box of a placed part including the net labels that will be attached."""
+    pins = circuit.pins(ref)
+    xs = [p["position"][0] for p in pins]
+    ys = [p["position"][1] for p in pins]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    sides = {d: [p for p in pins if p["direction"] == d and (ref, p["name"]) in named]
+             for d in ((-1, 0), (1, 0), (0, -1), (0, 1))}
+    text = lambda group: max((len(named[(ref, p["name"])]) for p in group), default=0)
+    centre = (y0 + y1) // 2
+    for direction, group in sides.items():
+        if not group:
+            continue
+        if direction == (-1, 0):
+            x0 = min(x0, x0 - (text(group) + 6) * CHAR)
+        elif direction == (1, 0):
+            x1 = max(x1, x1 + 10 * MM + (text(group) + 2) * CHAR)
+        else:
+            reach = 10 * MM + len(group) * 508000 + 3 * MM
+            y0, y1 = (min(y0, y0 - reach), y1) if direction == (0, -1) else (y0, max(y1, y1 + reach))
+    for direction in ((-1, 0), (1, 0)):
+        half = len(sides[direction]) * 254000 + 2 * MM
+        y0, y1 = min(y0, centre - half), max(y1, centre + half)
+    margin = 4 * MM  # reference/value text and breathing room
+    return x0 - margin, y0 - margin, x1 + margin, y1 + margin
+
+
+def _shelves(boxes, order, width):
+    spots, x, y, row = {}, 0, 0, 0
+    for key in order:
+        w, h = boxes[key]
+        if x and x + w > width:
+            x, y, row = 0, y - row, 0
+        spots[key] = (x, y)
+        x, row = x + w, max(row, h)
+    return spots, -(y - row)
+
+
+def _pack(boxes, groups):
+    """Shelf-pack boxes {key: (w, h)} into a landscape block (about 1.41:1) centred on 0,0.
+
+    ``groups`` is a list of key lists (one per source sheet); each group is packed tallest-first
+    so rows stay tight, and groups follow each other. Returns ({key: (left, top)}, width, height)
+    in native units, y growing upwards."""
+    order = [k for group in groups for k in sorted(group, key=lambda k: (-boxes[k][1], k))]
+    widest = max((w for w, _ in boxes.values()), default=0)
+    area = sum(w * h for w, h in boxes.values())
+    width = max(widest, int((area * 1.41) ** .5))
+    spots, height = _shelves(boxes, order, width)
+    for _ in range(40):  # widen until the block is no taller than an A-series landscape sheet
+        if height * 1.41 <= width * 1.02:
+            break
+        width = int(width * 1.05)
+        spots, height = _shelves(boxes, order, width)
+    used = max((spots[k][0] + boxes[k][0] for k in spots), default=0)
+    dx, dy = -used // 2, height // 2
+    return {k: (sx + dx, sy + dy) for k, (sx, sy) in spots.items()}, used, height
+
+
+def choose_sheet(width_mm, height_mm):
+    """Smallest landscape A-size sheet that holds the block plus border and title-block room."""
+    for name, w, h in SHEETS:
+        if width_mm + 20 <= w and height_mm + 50 <= h:
+            return name
+    return "A0"
+
+
 def _terminal_positions(circuit, placed, nets, names):
     """Fan labels into 5.08 mm rows with text clearance on either side of a part."""
     named_pins = {(node["ref"], placed[node["ref"]]["pins"][node["pin"]]): names[net["name"]]
@@ -311,7 +394,7 @@ def _terminal_positions(circuit, placed, nets, names):
                 endpoint = (ref, pin["name"])
                 # Native terminal text has fixed orientation. Reserve enough
                 # width even when a left-facing terminal's text extends right.
-                clearance = (len(named_pins[endpoint]) + 4) * 200000 if sign < 0 else 1000000
+                clearance = (len(named_pins[endpoint]) + 4) * CHAR if sign < 0 else 1000000
                 x = (min(bounds[0]) if sign < 0 else max(bounds[0])) + sign * clearance
                 y = item["position"][1] + (2 * index - len(side) + 1) * 254000
                 positions[endpoint] = (x, y)
@@ -323,6 +406,43 @@ def _terminal_positions(circuit, placed, nets, names):
             for index, pin in enumerate(side):
                 positions[(ref, pin["name"])] = (pin["position"][0], edge + sign * (1000000 + index * 508000))
     return positions
+
+
+def _repack(circuit, placed, special, positions, design, names):
+    """Move placed parts (and terminal-only connector cells) into a compact block on the sheet."""
+    named = {(node["ref"], placed[node["ref"]]["pins"][node["pin"]]): names[net["name"]]
+             for net in design["nets"] if len(net["nodes"]) > 1 for node in net["nodes"]
+             if node["ref"] in placed and node["pin"] not in placed[node["ref"]]["package_no_connect_pins"]}
+    boxes, anchors = {}, {}
+    for ref, item in placed.items():
+        x, y = item["position"]
+        x0, y0, x1, y1 = _extent(circuit, ref, named)
+        boxes[ref] = (x1 - x0, y1 - y0)
+        anchors[ref] = (x - x0, y - y1)  # part origin relative to the box's top-left corner
+    for ref, item in special.items():
+        if item["status"] != "terminal_only":
+            continue
+        pins = [int(n["pin"]) for net in design["nets"] for n in net["nodes"] if n["ref"] == ref
+                and str(n["pin"]).isdigit()] or [1]
+        longest = max((len(names[net["name"]]) for net in design["nets"]
+                       if any(n["ref"] == ref for n in net["nodes"])), default=4)
+        boxes[ref] = ((longest + 8) * CHAR, (max(pins) + 2) * 508000 + 6 * MM)
+        anchors[ref] = ((longest + 4) * CHAR, -3 * MM)
+    sheet_of = {c["ref"]: c["sheet_path"] for c in design["components"]}
+    groups = {}
+    for ref in boxes:
+        groups.setdefault(sheet_of.get(ref, ""), []).append(ref)
+    spots, width, height = _pack(boxes, [groups[k] for k in sorted(groups)])
+    for ref, (left, top) in spots.items():
+        x, y = left + anchors[ref][0], top + anchors[ref][1]
+        x, y = int(round(x / 254000) * 254000), int(round(y / 254000) * 254000)  # 0.1 in grid
+        positions[ref] = (x, y)
+        if ref in placed:
+            circuit.move(ref, x, y)
+            placed[ref]["position"] = [x, y]
+    width_mm, height_mm = width / MM, height / MM
+    return dict(size=choose_sheet(width_mm, height_mm), block_mm=[round(width_mm), round(height_mm)],
+                fits=width_mm + 20 <= SHEETS[-1][1] and height_mm + 50 <= SHEETS[-1][2])
 
 
 def verify_connectivity(circuit, expected_nets) -> dict:
@@ -454,45 +574,48 @@ def kicad_to_proteus(kicad_sch_or_xml, out_pdsprj, template, report_path=None, *
         except (UnsupportedFormat, ValueError, UnicodeError) as exc:
             item["reason"] = str(exc)
             report["skipped"].append(dict(ref=ref, kicad=_key(component), reason=str(exc)))
-    terminal_positions = _terminal_positions(circuit, placed, design["nets"], report["net_name_map"])
-    attached = set()
-    for net in design["nets"]:
-        name = report["net_name_map"][net["name"]]
-        endpoints, missing, terminals, no_connect = set(), [], [], []
-        kind = _terminal_kind(net["name"])
-        for node in net["nodes"]:
-            ref, pin = node["ref"], node["pin"]
-            if ref in placed:
-                if pin in placed[ref]["package_no_connect_pins"]:
-                    no_connect.append(node)
+    with circuit.batch():
+        sheet = _repack(circuit, placed, special, positions, design, report["net_name_map"])
+        report["sheet"] = sheet
+        terminal_positions = _terminal_positions(circuit, placed, design["nets"], report["net_name_map"])
+        attached = set()
+        for net in design["nets"]:
+            name = report["net_name_map"][net["name"]]
+            endpoints, missing, terminals, no_connect = set(), [], [], []
+            kind = _terminal_kind(net["name"])
+            for node in net["nodes"]:
+                ref, pin = node["ref"], node["pin"]
+                if ref in placed:
+                    if pin in placed[ref]["package_no_connect_pins"]:
+                        no_connect.append(node)
+                    else:
+                        endpoints.add((ref, placed[ref]["pins"][pin]))
+                elif ref in special:
+                    representation = special[ref]["status"]
+                    if representation == "terminal_only":
+                        terminals.append(node)
+                    elif representation == "terminal":
+                        kind = special[ref]["mapping"]["terminal_kind"]
                 else:
-                    endpoints.add((ref, placed[ref]["pins"][pin]))
-            elif ref in special:
-                representation = special[ref]["status"]
-                if representation == "terminal_only":
-                    terminals.append(node)
-                elif representation == "terminal":
-                    kind = special[ref]["mapping"]["terminal_kind"]
-            else:
-                missing.append(node)
-        item = dict(name=net["name"], proteus_name=name, pins=[list(p) for p in sorted(endpoints)], missing_nodes=missing,
-                    fully_placed=not missing and not terminals and bool(endpoints),
-                    preserved_no_connect_nodes=no_connect,
-                    source_pin_count=len(net["nodes"]), terminal_only_nodes=terminals)
-        report["nets"].append(item)
-        # Single-source-pin nets are deliberately left unconnected.
-        if len(net["nodes"]) < 2:
-            continue
-        for endpoint in sorted(endpoints):
-            if endpoint in attached:
-                continue  # grouped physical pads already share this logical pin
-            circuit.add_terminal(kind, "" if kind == "ground" and name == "GND" else name, endpoint,
-                                 position=terminal_positions[endpoint])
-            attached.add(endpoint)
-        for node in terminals:
-            x, y = positions[node["ref"]]
-            # One labelled terminal per connector pin, in the connector's cell.
-            circuit.add_terminal(kind, name, position=(x, y - int(node["pin"]) * 508000))
+                    missing.append(node)
+            item = dict(name=net["name"], proteus_name=name, pins=[list(p) for p in sorted(endpoints)], missing_nodes=missing,
+                        fully_placed=not missing and not terminals and bool(endpoints),
+                        preserved_no_connect_nodes=no_connect,
+                        source_pin_count=len(net["nodes"]), terminal_only_nodes=terminals)
+            report["nets"].append(item)
+            # Single-source-pin nets are deliberately left unconnected.
+            if len(net["nodes"]) < 2:
+                continue
+            for endpoint in sorted(endpoints):
+                if endpoint in attached:
+                    continue  # grouped physical pads already share this logical pin
+                circuit.add_terminal(kind, "" if kind == "ground" and name == "GND" else name, endpoint,
+                                     position=terminal_positions[endpoint])
+                attached.add(endpoint)
+            for node in terminals:
+                x, y = positions[node["ref"]]
+                # One labelled terminal per connector pin, in the connector's cell.
+                circuit.add_terminal(kind, name, position=(x, y - int(node["pin"]) * 508000))
     for device, reason in failed_devices.items():
         recommendation = "Extend the installed-device importer to support this observed definition layout"
         if "Missing graphic dependencies" in reason:
