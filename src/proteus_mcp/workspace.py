@@ -84,6 +84,15 @@ class Workspace:
     def _close_bridge(self):
         bridge, self.bridge = self.bridge, None
         if bridge is not None:
+            # HOLD freezes Proteus inside our model callback. Release it before
+            # asking the native simulator to stop, or Proteus kills that thread.
+            try:
+                if hasattr(bridge, "request"):
+                    bridge.request("RUN", timeout=1)
+                else:
+                    bridge.run()
+            except Exception:
+                pass  # analog-only probes and stopped simulations have no RUN
             try:
                 bridge.close()
             except Exception:
@@ -98,18 +107,18 @@ class Workspace:
         self.live_path, self.live_dirty = None, False
         if session is None:
             return errors
+        try:
+            if simulation is not None:
+                simulation.stop()
+        except Exception:
+            pass
         if save:
             try:
                 session.save()
             except Exception as exc:
                 errors.append(f"save: {exc}")
         try:
-            if simulation is not None:
-                simulation.stop()
-        except Exception:
-            pass
-        try:
-            session.close()
+            session.close(discard=not save)
         except Exception as exc:
             errors.append(f"close: {exc}")
             self._terminate(session)

@@ -42,7 +42,7 @@ class FakeSession:
     def save(self):
         self.saved = True
 
-    def close(self):
+    def close(self, discard=False):
         self.closed = True
 
 
@@ -150,6 +150,16 @@ def test_results_are_json_serialisable():
     json.dumps(server.proteus_info())
 
 
+def test_environment_and_probe_use_the_same_dll(tmp_path, monkeypatch):
+    dll = tmp_path / "MCPBRIDGE.DLL"
+    dll.touch()
+    monkeypatch.setenv("PROTEUS_MCP_BRIDGE_DLL", str(dll))
+    from proteus_mcp.probe import find_dll
+    info = server.proteus_info()
+    assert info["bridge_dll_found"]
+    assert info["bridge_dll"] == find_dll() == str(dll)
+
+
 # ---- workspace rules ---------------------------------------------------------
 def test_edit_without_project_gives_hint():
     result = server.connect("R1.1", "R2.1")
@@ -200,12 +210,48 @@ def test_live_flow_with_fakes(saved_project, fakes):
     assert server.probe_run()["ok"] and server.probe_events()["events"][0]["pin"] == "A"
     assert server.probe_analog()["reading"]["volts"]["A"] == 3.3
     bridge = W.bridge
+    assert server.sim_stop()["status"]["state"] == "stopped"
+    assert bridge.closed and W.bridge is None
+    assert server.sim_start()["ok"]
+    assert server.probe_read()["ok"] and W.bridge is not bridge
+    bridge = W.bridge
     # a second session closes the first one cleanly
     assert server.open_in_proteus()["ok"]
     assert first.closed and bridge.closed and len(FakeSession.instances) == 2
     result = server.close_proteus(save=True)
     assert result["ok"] and FakeSession.instances[1].saved and FakeSession.instances[1].closed
     assert W.session is None and not server.sim_status()["ok"]
+
+
+def test_import_exposes_placeholder_choice(tmp_path, monkeypatch):
+    from proteus_mcp import kicad_import
+    source = tmp_path / "net.xml"
+    source.touch()
+    captured = {}
+    def convert(*args, **kwargs):
+        captured.update(kwargs)
+        return {"simulation": {"verified": False}}
+    monkeypatch.setattr(kicad_import, "kicad_to_proteus", convert)
+    monkeypatch.setattr(server, "_default_template", lambda: TEMPLATE)
+    result = server.import_kicad(str(source), str(tmp_path / "out.pdsprj"), placeholders=False)
+    assert result["ok"] and captured["placeholders"] is False
+
+
+def test_close_stops_before_save_and_discards_only_when_requested():
+    order = []
+    session = FakeSession("x.pdsprj")
+    sim = FakeSimulation(session)
+    session.save = lambda: order.append("save")
+    session.close = lambda discard=False: order.append(("close", discard))
+    sim.stop = lambda: order.append("stop")
+    ws = Workspace()
+    ws.attach_session(session, sim, "x.pdsprj")
+    assert not ws.close_live(save=True)
+    assert order == ["stop", "save", ("close", False)]
+    order.clear()
+    ws.attach_session(session, sim, "x.pdsprj")
+    assert not ws.close_live()
+    assert order == ["stop", ("close", True)]
 
 
 @needs_template
@@ -230,7 +276,7 @@ def test_close_failure_terminates_process():
     ws = Workspace()
     session = FakeSession("x.pdsprj")
 
-    def stuck():
+    def stuck(discard=False):
         raise RuntimeError("stuck")
     session.close = stuck
     ws.attach_session(session, FakeSimulation(session), "x.pdsprj")

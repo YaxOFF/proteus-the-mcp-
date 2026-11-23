@@ -16,6 +16,7 @@ analog probes (``PRIMITIVE=ANALOG,MCPBRIDGE_A``) answer APINS/AREAD. See ``prote
 for placing a probe in a circuit.
 """
 import re
+import os
 import threading
 import time
 
@@ -64,6 +65,17 @@ class BridgeClient:
         pipe, self._pipe = self._pipe, None
         if pipe is not None:
             try:
+                if os.name == "nt":
+                    # A timed-out request may still be blocked in ReadFile on another
+                    # thread. Cancel it before closing so that thread and the server
+                    # can both exit (dropping the Python reference leaks the pipe).
+                    import ctypes
+                    from ctypes import wintypes
+                    import msvcrt
+                    cancel = ctypes.WinDLL("kernel32", use_last_error=True).CancelIoEx
+                    cancel.argtypes = (wintypes.HANDLE, ctypes.c_void_p)
+                    cancel.restype = wintypes.BOOL
+                    cancel(msvcrt.get_osfhandle(pipe.fileno()), None)
                 pipe.close()
             except OSError:
                 pass
@@ -75,10 +87,10 @@ class BridgeClient:
         self.close()
 
     # ---- raw protocol -------------------------------------------------
-    def _readline(self):
+    def _readline(self, pipe):
         data = b""
         while not data.endswith(b"\n"):
-            chunk = self._pipe.read(1)
+            chunk = pipe.read(1)
             if not chunk:
                 raise EOFError("bridge closed the pipe")
             data += chunk
@@ -90,11 +102,12 @@ class BridgeClient:
             raise BridgeError("not connected; call connect() first")
         timeout = self.timeout if timeout is None else timeout
         outcome = {}
+        pipe = self._pipe
 
         def exchange():
             try:
-                self._pipe.write((command + "\n").encode("ascii"))
-                outcome["reply"] = self._readline()
+                pipe.write((command + "\n").encode("ascii"))
+                outcome["reply"] = self._readline(pipe)
             except Exception as error:  # reported to the caller below
                 outcome["error"] = error
 
@@ -104,7 +117,8 @@ class BridgeClient:
             worker.join(timeout)
             if worker.is_alive():
                 # The pipe is now in an unknown state; drop it rather than mix up replies.
-                self._pipe = None
+                self.close()
+                worker.join(1)
                 raise BridgeError(f"no reply to {command!r} within {timeout}s")
         if "error" in outcome:
             self.close()

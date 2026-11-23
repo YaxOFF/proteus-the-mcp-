@@ -7,15 +7,12 @@ Program Files / ProgramData locations. DATA may live under the install folder
 import os
 from pathlib import Path
 
-_CANDIDATES = [
-    r"C:\Program Files (x86)\Labcenter Electronics\Proteus 8 Professional",
-    r"C:\Program Files\Labcenter Electronics\Proteus 8 Professional",
-    r"D:\Proteus",
-]
-_DATA_CANDIDATES = [
-    r"C:\ProgramData\Labcenter Electronics\Proteus 8 Professional",
-    r"C:\ProgramData\program",
-]
+_SYSTEM = Path(os.environ.get("SystemDrive", "C:") + os.sep)
+_VENDOR = Path("Labcenter Electronics") / "Proteus 8 Professional"
+_CANDIDATES = [Path(os.environ.get(key, str(_SYSTEM / folder))) / _VENDOR
+               for key, folder in (("ProgramFiles(x86)", "Program Files (x86)"),
+                                   ("ProgramFiles", "Program Files"))]
+_DATA_CANDIDATES = [Path(os.environ.get("ProgramData", str(_SYSTEM / "ProgramData"))) / _VENDOR]
 
 
 def home():

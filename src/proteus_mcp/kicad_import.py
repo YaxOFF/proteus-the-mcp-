@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unicodedata
@@ -30,8 +31,14 @@ def find_kicad_cli() -> Path:
         if not path.is_file():
             raise FileNotFoundError(f"KICAD_CLI does not exist: {path}")
         return path
-    root = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "KiCad"
-    candidates = list(root.glob("*/bin/kicad-cli.exe"))
+    found = shutil.which("kicad-cli")
+    if found:
+        return Path(found)
+    system = Path(os.environ.get("SystemDrive", "C:") + os.sep)
+    roots = [Path(os.environ.get(key, str(system / folder))) / "KiCad"
+             for key, folder in (("ProgramFiles", "Program Files"),
+                                 ("ProgramFiles(x86)", "Program Files (x86)"))]
+    candidates = [path for root in roots for path in root.glob("*/bin/kicad-cli.exe")]
     if not candidates:
         raise FileNotFoundError("KiCad CLI not found; set KICAD_CLI")
     return max(candidates, key=lambda p: tuple(int(n) for n in re.findall(r"\d+", p.parents[1].name)))
@@ -522,6 +529,13 @@ def kicad_to_proteus(kicad_sch_or_xml, out_pdsprj, template, report_path=None, *
                             nets_surviving_verified=sum(n["verified"] for n in report["nets"]),
                             reproduced_net_ratio=reproduced / len(design["nets"]) if design["nets"] else 1.0,
                             fully_placed_net_ratio=reproduced / len(fully) if fully else None)
+    report["simulation"] = dict(
+        verified=False,
+        placeholder_refs=sorted(ref for ref, part in placed.items() if part["placeholder"]),
+        skipped_refs=sorted(part["ref"] for part in report["skipped"]),
+        substitutions=[dict(ref=ref, reason=part["mapping"]["substitution"])
+                       for ref, part in placed.items() if part["mapping"].get("substitution")],
+        note="Connectivity-only conversion. Review models, firmware, power and substitutions before simulation.")
     _write_report(report, report_path)
     if not report["verification"]["passed"]:
         raise UnsupportedFormat(f"Reopened project failed connectivity verification; see {report_path}")

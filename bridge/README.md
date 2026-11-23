@@ -6,7 +6,7 @@ simulation.
 
 Attach it to a part in Proteus:
 
-- `PRIMITIVE=DIGITAL` (or `ANALOG`)
+- `PRIMITIVE=DIGITAL,MCPBRIDGE_D` (or `ANALOG,MCPBRIDGE_A`)
 - `MODDLL=<path to MCPBRIDGE.DLL>`
 
 While the simulation runs, the model opens the named pipe
@@ -64,8 +64,21 @@ that starts with `OK` or `ERR`.
 | `STEP <seconds>`       | Replies only after the target time is reached                |
 | `RUN`                  | `OK running` - resume the simulation                         |
 
-Analog commands `APINS` and `AREAD` are being added. See the main README for
-their usage.
+| Analog request | Reply |
+| --- | --- |
+| `APINS` | `OK <pin>,<pin>,...` |
+| `AREAD` | `OK t=<time> <pin>=<volts> ...` |
+
+Both kinds share the same process-wide pipe. Several analog probes use
+`REF.pin` prefixes to disambiguate their pins. Digital commands address the
+first registered digital probe. HOLD/STEP require a digital probe; analog-only
+circuits support PING, TIME, APINS and AREAD. Release HOLD with RUN before
+closing a raw BridgeClient; the MCP server does this before stopping Proteus.
+
+Python finds the DLL through an explicit `dll` argument,
+`PROTEUS_MCP_BRIDGE_DLL`, the clone's `bridge/` directory,
+`%LOCALAPPDATA%\proteus-mcp`, or the detected Proteus MODELS/BIN directories.
+For a wheel installation, the per-user folder avoids modifying Proteus itself.
 
 ## Troubleshooting
 

@@ -107,6 +107,7 @@ def test_mapping_part_fallback_power_connectors_and_near_match():
 
 def test_find_cli_override_and_numeric_version_order(tmp_path, monkeypatch):
     monkeypatch.delenv("KICAD_CLI", raising=False)
+    monkeypatch.setattr(importer.shutil, "which", lambda name: None)
     monkeypatch.setenv("ProgramFiles", str(tmp_path))
     for version in ("9.0", "10.0"):
         path = tmp_path / "KiCad" / version / "bin" / "kicad-cli.exe"
@@ -289,6 +290,8 @@ def test_unknown_ic_placeholder_preserves_all_pin_groups(tmp_path):
     assert report["counts"]["nets_reproduced"] == 5
     assert report["verification"]["passed"] and not report["skipped"]
     part = next(p for p in report["parts"] if p["ref"] == "U99")
+    assert report["simulation"]["verified"] is False
+    assert report["simulation"]["placeholder_refs"] == ["U99"]
     assert part["placeholder"] and part["proteus_value"] == "NOT_A_REAL_DEVICE_123"
     reopened = Circuit.open(output)
     for index, number in enumerate(("1", "2", "3")):

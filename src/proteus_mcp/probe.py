@@ -67,13 +67,18 @@ class Probe:
 
 def find_dll(dll=None):
     """Locate MCPBRIDGE.DLL: explicit path, $PROTEUS_MCP_BRIDGE_DLL, the repo's bridge/ folder,
-    then %LOCALAPPDATA%\\proteus-mcp."""
+    then %LOCALAPPDATA%\\proteus-mcp and Proteus' MODELS/BIN folders."""
     candidates = [dll, os.environ.get("PROTEUS_MCP_BRIDGE_DLL"),
                   Path(__file__).resolve().parents[2] / "bridge" / "MCPBRIDGE.DLL",
                   Path(os.environ.get("LOCALAPPDATA", "")) / "proteus-mcp" / "MCPBRIDGE.DLL"]
     for item in candidates:
         if item and Path(item).is_file():
             return str(Path(item).resolve())
+    from .engine.proteus_paths import home
+    for folder in ("MODELS", "BIN"):
+        candidate = home() / folder / "MCPBRIDGE.DLL"
+        if candidate.is_file():
+            return str(candidate.resolve())
     raise FileNotFoundError("MCPBRIDGE.DLL not found; build it with bridge\\build.bat or pass dll=...")
 
 

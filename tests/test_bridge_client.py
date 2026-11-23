@@ -128,6 +128,8 @@ def test_timeout_raises_and_drops_connection():
         client.ping()
     assert not client.connected
     client.close()
+    server.join(2)
+    assert not server.is_alive(), "timed-out pipe must be closed, releasing its server"
 
 
 def test_connect_failure_and_late_server():

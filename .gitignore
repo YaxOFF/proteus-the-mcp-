@@ -4,6 +4,11 @@ __pycache__/
 build/
 dist/
 *.egg-info/
+.pytest_cache/
+# Per-machine configuration and logs
+.env
+.env.*
+*.log
 # Labcenter's copyrighted VSM header: never commit it
 bridge/sdk/
 # compiled bridge goes to GitHub Releases, not the repo

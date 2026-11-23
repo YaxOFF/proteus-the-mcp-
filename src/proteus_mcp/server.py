@@ -4,7 +4,6 @@ Units at the tool API are millimetres; the engine uses integers where 100000 = 1
 Heavy or optional modules are imported lazily inside tools so the server always starts.
 """
 import functools
-import shutil
 from pathlib import Path
 
 try:
@@ -16,8 +15,6 @@ from .workspace import WORKSPACE as W, WorkspaceError
 
 mcp = FastMCP("proteus")
 UNIT = 100000  # engine units per millimetre
-REPO = Path(__file__).resolve().parents[2]
-FALLBACK_TEMPLATE = REPO / "work" / "template813.pdsprj"
 
 HINTS = {
     "unknown or ambiguous pin": "use get_pins(ref) to see valid pin names/numbers; endpoints are 'REF.PIN'",
@@ -107,25 +104,19 @@ def _pds_version(exe):
 
 
 def _bridge_dll():
-    candidates = [REPO / "bridge" / "MCPBRIDGE.DLL"]
+    from .probe import find_dll
     try:
-        from .engine import proteus_paths
-        candidates += [proteus_paths.home() / "MODELS" / "MCPBRIDGE.DLL",
-                       proteus_paths.home() / "BIN" / "MCPBRIDGE.DLL"]
-    except Exception:
-        pass
-    return next((p for p in candidates if p.exists()), None)
+        return Path(find_dll())
+    except FileNotFoundError:
+        return None
 
 
 def _kicad_cli():
-    found = shutil.which("kicad-cli")
-    if found:
-        return found
-    for root in (Path(r"C:\Program Files\KiCad"), Path(r"C:\Program Files (x86)\KiCad")):
-        if root.exists():
-            for hit in root.glob("*/bin/kicad-cli.exe"):
-                return str(hit)
-    return None
+    from .kicad_import import find_kicad_cli
+    try:
+        return str(find_kicad_cli())
+    except FileNotFoundError:
+        return None
 
 
 @tool
@@ -175,13 +166,8 @@ def _state():
 
 
 def _default_template():
-    try:
-        from .templates import ensure_template
-        return Path(ensure_template())
-    except Exception:
-        if FALLBACK_TEMPLATE.exists():
-            return FALLBACK_TEMPLATE
-        raise
+    from .templates import ensure_template
+    return Path(ensure_template())
 
 
 @tool
@@ -423,6 +409,7 @@ def sim_start():
 def sim_stop():
     """[simulation] Stop the simulation."""
     sim = W.need_simulation()
+    W._close_bridge()
     sim.stop()
     return {"status": sim.status()}
 
@@ -478,6 +465,8 @@ def _bridge():
     """Connect lazily to the probe bridge of the live session."""
     if W.session is None:
         raise WorkspaceError("Proteus is not open on a project", "call open_in_proteus, then sim_start")
+    if W.bridge is not None and not getattr(W.bridge, "connected", True):
+        W._close_bridge()
     if W.bridge is None:
         from .bridge_client import BridgeClient
         client = BridgeClient()
@@ -534,14 +523,17 @@ def probe_analog():
 
 # ---------------------------------------------------------------- import
 @tool
-def import_kicad(kicad_sch: str, out_pdsprj: str):
+def import_kicad(kicad_sch: str, out_pdsprj: str, placeholders: bool = True):
     """[import] Convert a KiCad schematic (.kicad_sch or exported netlist XML) to a Proteus .pdsprj.
-    Writes the new file and returns the conversion report (what was mapped, what was skipped)."""
+    Writes the new file and returns the conversion report. Connectivity is verified, simulation
+    equivalence is not. Unknown ICs become connectivity-only headers by default; set
+    placeholders=false to skip them. Review skipped parts, substitutions and simulation warnings."""
     from .kicad_import import kicad_to_proteus
     if not Path(kicad_sch).exists():
         raise FileNotFoundError(kicad_sch)
     report_path = str(Path(out_pdsprj).with_suffix(".report.json"))
-    report = kicad_to_proteus(kicad_sch, out_pdsprj, _default_template(), report_path=report_path)
+    report = kicad_to_proteus(kicad_sch, out_pdsprj, _default_template(), report_path=report_path,
+                             placeholders=bool(placeholders))
     return {"out": out_pdsprj, "report_path": report_path, "report": report}
 
 

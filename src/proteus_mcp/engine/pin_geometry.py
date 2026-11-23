@@ -173,7 +173,8 @@ if __name__ == "__main__":
     from pathlib import Path
     import zipfile
 
-    root = Path(r"C:\ProgramData\program\SAMPLES")
+    from .proteus_paths import SAMPLES, LIBRARY
+    root = Path(SAMPLES)
     def read(relative):
         with zipfile.ZipFile(root / relative) as archive:
             return archive.read("ROOT.DSN")
@@ -192,7 +193,7 @@ if __name__ == "__main__":
     m4 = read(r"VSM for Cortex M4\STM32\USART_DMA\project.pdsprj")
     assert len(symbol_pins(m3, "STM32F103R6")) == 57
     assert len(symbol_pins(m4, "STM32F401VE")) == 92
-    library = Path(r"C:\ProgramData\program\LIBRARY\CM3_STM32.LIB").read_bytes()
+    library = (Path(LIBRARY) / "CM3_STM32.LIB").read_bytes()
     assert [(p["name"], p["anchor"]) for p in library_pin_anchors(library, "STM32F103R6")] == [
         (p["name"], p["anchor"]) for p in symbol_pins(m3, "STM32F103R6")]
     try:
