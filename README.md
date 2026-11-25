@@ -28,6 +28,9 @@ connectivity. The server exposes 54 tools over stdio.
 > - **`build_circuit(spec)` / `verify_netlist(spec)`**: build a whole circuit from a JSON netlist and
 >   check Proteus's compiled netlist against it (splits, shorts, missing pins). `build_circuit` warns
 >   about library parts without a simulation model (e.g. 74HC541 in 8.13; 74LS541 has one).
+> - **Real wires**: `build_circuit(spec, wiring="channels")` draws wires with lanes and junctions for
+>   nets that flow from an output to inputs in the next column, never through a part or touching
+>   another net, and labels the rest. `"titles"` in the spec put region names on the sheet.
 > - **`sim_start` explains refusals**: it returns Proteus's log ("No model specified for U32", linker
 >   errors) instead of timing out.
 >
