@@ -21,9 +21,21 @@ connectivity. The server exposes 54 tools over stdio.
 >   74HC161 + 74HC257 program-counter module, all driven and read through one digital probe.
 >   See [examples/smoke_74hc.py](examples/smoke_74hc.py).
 >
+> Added in this fork:
+> - **Gates of multi-element chips**: place `U1:A`..`U1:D` of a 74HC08 (or 74HC00/02/04/32/86/139 ...)
+>   with the pad numbers from the library's `*PINOUT` record, as Proteus itself stores them.
+> - **Probes up to 60 pins** (`CONN-DIL` headers above 18 pins).
+> - **`build_circuit(spec)` / `verify_netlist(spec)`**: build a whole circuit from a JSON netlist and
+>   check Proteus's compiled netlist against it (splits, shorts, missing pins). `build_circuit` warns
+>   about library parts without a simulation model (e.g. 74HC541 in 8.13; 74LS541 has one).
+> - **`sim_start` explains refusals**: it returns Proteus's log ("No model specified for U32", linker
+>   errors) instead of timing out.
+>
+> Used to simulate a 32-chip 74HC 8-bit computer end to end (9 programs, instruction by instruction).
+>
 > Known limit on 8.13: interactive controls such as LOGICSTATE cannot be toggled through the tools,
 > because the control-state reader targets the Proteus 8.16 build. Use a digital probe
-> (`add_probe`, up to 16 pins) to drive and read signals.
+> (`add_probe`) to drive and read signals.
 
 **Status: experimental Windows integration.** The complete MCP-to-Proteus flow
 has been tested locally with Proteus 8.13.31525.0 and Python 3.10.11. This is
