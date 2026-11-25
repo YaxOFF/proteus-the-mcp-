@@ -362,6 +362,17 @@ def configure_power(rails: dict, mapping: dict = None):
     return {"rails": rails, "mapping": mapping or {}}
 
 
+
+@tool
+def build_circuit(spec):
+    """[edit] Place and wire a whole circuit from a netlist spec (a dict or a .json path):
+    {"components": [{"ref", "device", "value"?, "x_mm", "y_mm", "rotation"?}],
+     "nets": {"NAME": ["U1.2", "U2:A.1", ...]}}. Gates of multi-element chips use refs like U2:A.
+    GND/VCC nets get ground/power terminals; other nets are joined by net labels with their name.
+    Use on a fresh project_new; then save_project, open_in_proteus and verify_netlist(spec)."""
+    from .spec import build
+    return _edit(lambda c: build(c, spec, _mm))
+
 # ---------------------------------------------------------------- live
 @tool
 def open_in_proteus(visible: bool = False):
@@ -440,6 +451,15 @@ def compile_netlist():
     """[live] Ask Proteus to compile the logical netlist and return its parts and nets (ground truth
     for connectivity as Proteus sees it). Needs open_in_proteus."""
     return {"netlist": W.need_session().netlist()}
+
+
+@tool
+def verify_netlist(spec):
+    """[live] Compare the netlist Proteus compiles with a build_circuit spec (dict or .json path).
+    Returns ok plus split (a spec net broken in Proteus), short (spec nets merged) and missing pins.
+    Needs open_in_proteus on the saved project."""
+    from .spec import verify
+    return verify(W.need_circuit(), spec, W.need_session().netlist())
 
 
 @tool
