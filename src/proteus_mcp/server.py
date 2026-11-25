@@ -364,14 +364,17 @@ def configure_power(rails: dict, mapping: dict = None):
 
 
 @tool
-def build_circuit(spec):
+def build_circuit(spec, wiring: str = "labels"):
     """[edit] Place and wire a whole circuit from a netlist spec (a dict or a .json path):
     {"components": [{"ref", "device", "value"?, "x_mm", "y_mm", "rotation"?}],
      "nets": {"NAME": ["U1.2", "U2:A.1", ...]}}. Gates of multi-element chips use refs like U2:A.
     GND/VCC nets get ground/power terminals; other nets are joined by net labels with their name.
+    wiring="channels" draws real wires (lane + junctions) for nets that flow left to right from one
+    output to inputs further right, and labels the rest. Optional "titles": [{"text", "x_mm",
+    "y_mm"}] put free text labels on the sheet (e.g. module names).
     Use on a fresh project_new; then save_project, open_in_proteus and verify_netlist(spec)."""
     from .spec import build
-    return _edit(lambda c: build(c, spec, _mm))
+    return _edit(lambda c: build(c, spec, _mm, wiring))
 
 # ---------------------------------------------------------------- live
 @tool

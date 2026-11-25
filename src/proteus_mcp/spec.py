@@ -4,11 +4,14 @@ Specification::
 
     {"components": [{"ref": "U1", "device": "74HC161", "value": "74HC161",
                      "x_mm": 0, "y_mm": 0, "rotation": 0, "properties": {"INIT": "0"}}, ...],
-     "nets": {"CLK": ["U1.2", "U2:A.1"], "GND": ["U1.8"], "VCC": ["U1.16"], ...}}
+     "nets": {"CLK": ["U1.2", "U2:A.1"], "GND": ["U1.8"], "VCC": ["U1.16"], ...},
+     "titles": [{"text": "PROGRAM_COUNTER", "x_mm": 0, "y_mm": 40}]}
 
 Endpoints are 'REF.PIN' with a pin name or number; gates use 'U2:A.1'. Nets named GND or VCC
-get ground/power terminals; every other net is joined with net labels carrying its name. A net
-with one endpoint is labelled too, so a later probe or part can join it by name.
+get ground/power terminals. With wiring="labels" every other net is joined with net labels carrying
+its name; with wiring="channels" nets that flow left to right get real wires (see channels.py) and
+the rest keep labels. A net with one endpoint is labelled too, so a later probe or part can join
+it by name. Titles are free-standing labels: text on the sheet that names a region.
 """
 import json
 from pathlib import Path
@@ -33,9 +36,12 @@ def load(spec):
     return spec
 
 
-def build(circuit, spec, to_native):
+def build(circuit, spec, to_native, wiring="labels"):
     """Place and wire ``spec`` into ``circuit``. ``to_native`` converts millimetres."""
     from .wiring import link
+    from .channels import route
+    if wiring not in ("labels", "channels"):
+        raise ValueError("wiring must be 'labels' or 'channels'")
     spec = load(spec)
     unmodelled = set()
     with circuit.batch():
@@ -49,8 +55,18 @@ def build(circuit, spec, to_native):
             models = circuit.templates[device].get("model_evidence")
             if models is not None and not models and not properties.keys() & {"MODFILE", "PRIMITIVE", "MODDLL"}:
                 unmodelled.add(part["ref"].split(":")[0] + " " + device)
-        for name, endpoints in spec["nets"].items():
-            endpoints = [_resolve(circuit, e) for e in endpoints]
+        nets = {name: [_resolve(circuit, e) for e in endpoints] for name, endpoints in spec["nets"].items()}
+        wired = {}
+        if wiring == "channels":
+            wired, _ = route(circuit, {n: e for n, e in nets.items() if n not in POWER})
+            for connections in wired.values():
+                circuit._connections.extend(connections)
+        for title in spec.get("titles", []):
+            circuit.add_terminal("label", title["text"], None,
+                                 position=(to_native(title["x_mm"]), to_native(title["y_mm"])))
+        for name, endpoints in nets.items():
+            if name in wired:
+                continue
             if name in POWER:
                 for endpoint in endpoints:
                     circuit.add_terminal(POWER[name], name, endpoint)
@@ -59,7 +75,7 @@ def build(circuit, spec, to_native):
             else:
                 for endpoint in endpoints[1:]:
                     link(circuit, endpoints[0], endpoint, style="label", name=name)
-    result = {"components": len(spec["components"]), "nets": len(spec["nets"])}
+    result = {"components": len(spec["components"]), "nets": len(spec["nets"]), "wired_nets": len(wired)}
     if unmodelled:
         # Proteus refuses to simulate these ("No model specified"); give them a model property.
         result["warnings"] = [f"{part}: the library device has no simulation model (MODFILE/PRIMITIVE)"

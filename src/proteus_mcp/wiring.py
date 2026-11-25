@@ -36,6 +36,16 @@ def net_label(circuit, endpoint):
         if (terminal["kind"] in ("label", "power", "ground") and name and terminal.get("pin") is not None
                 and tuple(terminal["pin"]) in members):
             return terminal["kind"], name
+    # A wire label also names the net: a new pin joins it with a matching net label.
+    for connection in circuit.connections():
+        if tuple(connection["first"]) not in members:
+            continue
+        layout = connection.get("layout") or {}
+        labels = list(connection.get("labels") or []) + [label for link in layout.get("links", [])
+                                                         for label in link.get("labels", [])]
+        labels += [label for group in (layout.get("labels") or {}).values() for label in group]
+        if labels:
+            return "label", labels[0]["text"]
     return None
 
 
