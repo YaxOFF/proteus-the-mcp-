@@ -2,7 +2,7 @@
   "mcpServers": {
     "proteus": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/mahmoud-elghamry/proteus-mcp", "proteus-mcp"]
+      "args": ["--from", "git+https://github.com/YaxOFF/proteus-the-mcp-", "proteus-mcp"]
     }
   }
 }

@@ -6,7 +6,24 @@ connectivity. The server exposes 54 tools over stdio.
 
 [العربية](README.ar.md)
 
-<!-- mcp-name: io.github.mahmoud-elghamry/proteus-mcp -->
+> **Community fork.** This repository continues
+> [mahmoud-elghamry/proteus-mcp](https://github.com/mahmoud-elghamry/proteus-mcp)
+> (MIT), whose engine is a modified fork of
+> [proteus-automatic-api](https://github.com/kudoumakoto6523-design/Proteus_automatic_package)
+> (MIT). All credit for the original work goes to those authors; see [NOTICE.md](NOTICE.md).
+>
+> Checked in this fork on Proteus 8.13.31525.0 (Windows 11, Python 3.12):
+> - Source audit: the only runtime dependency is `mcp`, and the code makes no network calls.
+>   `MCPBRIDGE.DLL` v0.1.0 (sha256 `5b9ec5ec553de304bb5643a808c95bd4fe007c3c51dedb499fa9ae996fcf2de0`)
+>   imports only `KERNEL32` and exports the four standard VSM model entry points.
+> - Offline suite: 162 passed, 28 skipped.
+> - Live, over MCP stdio with a visible Proteus: a 74HC08 truth table, a 74HC161 counter and a
+>   74HC161 + 74HC257 program-counter module, all driven and read through one digital probe.
+>   See [examples/smoke_74hc.py](examples/smoke_74hc.py).
+>
+> Known limit on 8.13: interactive controls such as LOGICSTATE cannot be toggled through the tools,
+> because the control-state reader targets the Proteus 8.16 build. Use a digital probe
+> (`add_probe`, up to 16 pins) to drive and read signals.
 
 **Status: experimental Windows integration.** The complete MCP-to-Proteus flow
 has been tested locally with Proteus 8.13.31525.0 and Python 3.10.11. This is
@@ -36,7 +53,7 @@ In PowerShell, clone and install with the same Python launcher used by your MCP
 client:
 
 ```powershell
-git clone https://github.com/mahmoud-elghamry/proteus-mcp.git
+git clone https://github.com/YaxOFF/proteus-the-mcp-.git
 cd proteus-mcp
 py -3 -m pip install --user .
 ```
@@ -62,7 +79,7 @@ teaches the assistant the right call order and honesty rules, and the commands
 `/proteus:import-kicad` and `/proteus:check-circuit`:
 
 ```text
-/plugin marketplace add mahmoud-elghamry/proteus-mcp
+/plugin marketplace add YaxOFF/proteus-the-mcp-
 /plugin install proteus@proteus-mcp
 ```
 

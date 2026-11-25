@@ -20,3 +20,4 @@ bridge/*.lib
 # local test output
 work/
 *.sdf
+examples/out/

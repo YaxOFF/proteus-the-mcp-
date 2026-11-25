@@ -22,7 +22,7 @@
 في `PowerShell`، انسخ المستودع وثبّته باستخدام مشغّل `Python` نفسه الذي يستخدمه عميل `MCP` لديك:
 
 ```powershell
-git clone https://github.com/mahmoud-elghamry/proteus-mcp.git
+git clone https://github.com/YaxOFF/proteus-the-mcp-.git
 cd proteus-mcp
 py -3 -m pip install --user .
 ```
@@ -42,7 +42,7 @@ py -3 -m pip install --user .\proteus_mcp-0.1.0-py3-none-any.whl
 والأوامر `/proteus:import-kicad` و`/proteus:check-circuit`:
 
 ```text
-/plugin marketplace add mahmoud-elghamry/proteus-mcp
+/plugin marketplace add YaxOFF/proteus-the-mcp-
 /plugin install proteus@proteus-mcp
 ```
 

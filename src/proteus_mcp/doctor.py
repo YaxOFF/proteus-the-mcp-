@@ -20,7 +20,7 @@ import sys
 
 _DLL_FIX = (
     "Download MCPBRIDGE.DLL from "
-    "https://github.com/mahmoud-elghamry/proteus-mcp/releases/latest "
+    "https://github.com/YaxOFF/proteus-the-mcp-/releases/latest "
     "and set PROTEUS_MCP_BRIDGE_DLL to its path."
 )
 
