@@ -263,7 +263,20 @@ class Simulation:
         if state["state"] == "running":
             return state
         self._menu("Debug/Run Simulation")
-        return self._until({"running"})
+        try:
+            return self._until({"running"})
+        except TimeoutError:
+            # Proteus 8.13 reports a refused start (e.g. "No model specified for U32") in the
+            # main window title ("... - PARTITION ANALYSER ERRORS") and its docked Log Window.
+            failed = [row for row in native.windows(self.session.pid) if row["title"].endswith(" ERRORS")]
+            if len(failed) != 1:
+                raise
+            try:
+                log = self._read_listview(failed[0])
+            except Exception:  # an unreadable log must not hide the refusal itself
+                log = "(log window not readable)"
+            stage = failed[0]["title"].rsplit(" - ", 1)[-1]
+            raise RuntimeError(f"Proteus refused to start the simulation ({stage}):\n{log}") from None
 
     def pause(self):
         state = self.status()
@@ -545,7 +558,11 @@ class Simulation:
             if self.status()["state"] not in ("running", "paused"):
                 raise RuntimeError("The Simulation Log exists only while a simulation is running or paused")
             self._menu("Debug/1. Simulation Log")
-        window = session._wait(log_window)
+        return self._read_listview(session._wait(log_window))
+
+    def _read_listview(self, window):
+        """Text of the single list view among ``window``'s children (one line per row)."""
+        session, u, k = self.session, native.u, native.k
         views = [row for row in window["children"] if row["cls"] == "SysListView32"]
         headers = [row for row in window["children"] if row["cls"] == "SysHeader32"]
         if len(views) != 1:
