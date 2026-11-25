@@ -203,7 +203,7 @@ def _adi_attach(session, ref, props):
     if not re.fullmatch(r"[A-Za-z0-9_:+.\-]+", ref):
         raise ValueError("A literal reference is required")
     lines = [f'IF REF="{ref}"'] + [f' {key}="{value}"' for key, value in props.items()] + ["END", ""]
-    path = session.project.parent / f"probe-{os.getpid()}-{int(time.time() * 1000)}.adi"
+    path = session._workdir / f"probe-{os.getpid()}-{int(time.time() * 1000)}.adi"
     path.write_text("\n".join(lines), encoding="ascii")
     try:
         session.menu("Tool/ASCII Data Import Tool")

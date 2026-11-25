@@ -15,6 +15,12 @@ Windows only; the user's own licensed Proteus 8 must be installed.
 | Offline editing of the file | `project_new`, `project_open`, `add_component`, `connect`, `add_terminal`, `move_component`, `set_value`, `save_project`, ... | nothing running |
 | Live Proteus | `open_in_proteus`, then `compile_netlist`, `export_image`, `run_erc`, `set_sheet_size`, `sim_*`, `probe_*`, finally `close_proteus` | a saved project |
 
+Launch modes: `open_in_proteus()` hidden (default); `open_in_proteus(visible=true)` when the user
+wants to watch; `attach_proteus(project)` when the user already has the project open in Proteus.
+Attached Proteus is never closed or saved unless the user asks; `close_proteus` only detaches. To add
+parts to an attached project: ask the user to save, edit offline, `save_project(overwrite=true)`,
+`reload_in_proteus`. If reload reports unsaved changes, ask the user; never work around it.
+
 Order for a live session: **save_project → open_in_proteus → work → close_proteus**. Always close,
 so no PDS.EXE stays running. Offline edits made while Proteus is open are not seen by it: close, edit,
 save, reopen.

@@ -105,17 +105,23 @@ def parse_sdf(text):
 class Session:
     """Owns one Proteus process. Pass a disposable project copy, not an original."""
 
-    def __init__(self, project, executable=None):
+    attached = False
+
+    def __init__(self, project, executable=None, visible=None):
+        """Launch Proteus on ``project``. visible=None follows PROTEUS_MCP_VISIBLE (default hidden)."""
         self.project = Path(project).resolve(strict=True)
+        self._stem, self._workdir = self.project.stem, self.project.parent
         if executable is None:
             from .proteus_paths import EXECUTABLE as executable
         executable = Path(executable).resolve(strict=True)
         if self.project.suffix.lower() != ".pdsprj" or executable.name.upper() != "PDS.EXE":
             raise ValueError("Expected a .pdsprj project and PDS.EXE")
-        if os.environ.get("PROTEUS_MCP_VISIBLE") == "1":
+        if visible is None:
+            visible = os.environ.get("PROTEUS_MCP_VISIBLE") == "1"
+        if visible:
             startup = subprocess.STARTUPINFO()
             startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startup.wShowWindow = 0
+            startup.wShowWindow = 1  # SW_SHOWNORMAL: the user watches this one
             self.process = subprocess.Popen([str(executable), str(self.project)], startupinfo=startup)
         else:
             # Default: run on a private desktop so no window or taskbar icon ever appears.
@@ -139,6 +145,59 @@ class Session:
         # ponytail: allow native child views to settle; no documented application-ready event exists.
         time.sleep(1)
 
+    @classmethod
+    def attach(cls, pid, project=None):
+        """Use a Proteus the user already has open, without launching or ever closing it.
+
+        ``project`` is the .pdsprj it shows (needed only for save/reload); temporary files go to
+        a private temp folder. close() just detaches."""
+        import tempfile
+        self = cls.__new__(cls)
+        self.process = native.ExistingProcess(pid)
+        self.pid, self.attached = pid, True
+        rows = [r for r in native.running_proteus() if r["pid"] == pid]
+        if len(rows) != 1:
+            raise RuntimeError(f"PID {pid} has no single Proteus main window on this desktop")
+        self._stem = rows[0]["project_stem"]
+        self.project = Path(project).resolve() if project else None
+        if self.project is not None and self.project.stem != self._stem:
+            raise ValueError(f"Proteus shows '{self._stem}', not {self.project.name}")
+        self._workdir = Path(tempfile.mkdtemp(prefix="proteus-mcp-"))
+        self._wait(self._ready)
+        return self
+
+    def reload(self):
+        """Re-open the project from disk in the attached Proteus (after offline edits).
+
+        If Proteus asks to save unsaved changes, the prompt is cancelled (nothing lost, nothing
+        saved) and RuntimeError explains it."""
+        if self.project is None:
+            raise RuntimeError("Unknown project path: attach with project=...")
+        self.menu("File/Open Project")
+
+        def prompt():
+            for dialog in native.windows(self.pid):
+                if dialog["cls"] != "#32770":
+                    continue
+                if any(child["title"] == "Save changes to current project?" for child in dialog["children"]):
+                    return ("save", dialog)
+                if dialog["enabled"] and any(child["cls"] == "Edit" and child["control_id"] == 1148
+                                             for child in dialog["children"]):
+                    return ("open", dialog)
+            return None
+        kind, dialog = self._wait(prompt)
+        if kind == "save":
+            self._click(dialog, "&Cancel")
+            raise RuntimeError("Proteus has unsaved changes; save or discard them in Proteus, then reload")
+        self._file_dialog(dialog["title"], self.project)
+        gone = lambda: not any(r["hwnd"] == dialog["hwnd"] for r in native.windows(self.pid))
+        self._wait(gone, timeout=30)
+        # ponytail: no load-complete event; let the reopened design settle like a fresh launch.
+        time.sleep(2)
+        self._wait(self._ready, timeout=45)
+        time.sleep(1)
+        return self.project
+
     def _wait(self, condition, timeout=15):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -152,7 +211,7 @@ class Session:
 
     def _ready(self):
         rows = [row for row in native.windows(self.pid) if native.u.GetMenu(row["hwnd"])
-                and row["title"].startswith(self.project.stem + " - ") and row["enabled"]]
+                and row["title"].strip("* ").startswith(self._stem + " - ") and row["enabled"]]
         return rows[0] if len(rows) == 1 else None
 
     def menu(self, path):
@@ -209,7 +268,7 @@ class Session:
         return parse_sdf(destination.read_text(encoding="cp1252"))
 
     def netlist(self):
-        temporary = self.project.parent / f"api-{uuid.uuid4().hex}.sdf"
+        temporary = self._workdir / f"api-{uuid.uuid4().hex}.sdf"
         result = self.export_netlist(temporary)
         temporary.unlink()
         return result
@@ -228,7 +287,7 @@ class Session:
                 raise ValueError("Invalid ADI property")
             value.encode("ascii")
             lines.append(f' {key}="{value}"')
-        path = self.project.parent / f"api-{uuid.uuid4().hex}.adi"
+        path = self._workdir / f"api-{uuid.uuid4().hex}.adi"
         path.write_text("\n".join(lines + ["END", ""]), encoding="ascii")
         try:
             self.menu("Tool/ASCII Data Import Tool")
@@ -244,6 +303,8 @@ class Session:
             path.unlink()
 
     def save(self):
+        if self.project is None:
+            raise RuntimeError("Unknown project path: attach with project=... to save")
         before = self.project.stat().st_mtime_ns
         self.menu("File/Save Project")
         handled = set()
@@ -261,6 +322,8 @@ class Session:
     def close(self, discard=False):
         """Exit Proteus. With discard=True a "Save changes?" prompt is answered No
         (use it for disposable copies, e.g. after a simulation run marked the project dirty)."""
+        if self.attached:
+            return None  # the user's Proteus: detach only, never exit or answer its prompts
         if self.process.poll() is not None:
             return self.process.returncode
         time.sleep(1)

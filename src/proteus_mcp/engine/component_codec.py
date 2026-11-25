@@ -278,7 +278,16 @@ class Circuit:
         from .device_library import Library, definition_groups, describe_definition
 
         donor_definitions = None
-        if donor_project is not None:
+        own = definition_groups(self._dsn)["devices"]
+        if donor_project is None and library is None and name in own and name not in self.templates:
+            # Already embedded (no instance yet): register the project's own definition, so new
+            # parts match the ones the project already has and nothing is added to the file.
+            definition = own[name]
+            body, device_entry = definition["body"], definition["entry"]
+            entry = {"name": name, "path": str(self.source), "library": "embedded",
+                     "timestamp": struct.unpack_from("<I", device_entry, 1 + len(name))[0]}
+            metadata = describe_definition(entry, body)
+        elif donor_project is not None:
             with ZipFile(donor_project) as donor:
                 donor_definitions = definition_groups(donor.read("ROOT.DSN"))
             _need(name in donor_definitions["devices"], "Device is not embedded in the donor project")
@@ -299,7 +308,11 @@ class Circuit:
         _need(name not in self.templates, "Device template is already imported")
         base = definition_groups(self._dsn)
         graphics, devices = dict(base["graphics"]), dict(base["devices"])
-        _need(name not in devices, "An embedded device with this name already exists")
+        # An opened project can already embed a device it has no instance of (e.g. RESISTOR in a
+        # template-made project). Re-registering a byte-identical definition is a no-op; a
+        # different definition with the same name is still refused.
+        _need(name not in devices or devices[name]["entry"] == device_entry,
+              "An embedded device with this name already exists")
         if donor_definitions is not None:
             for key, definition in donor_definitions["graphics"].items():
                 graphics.setdefault(key, definition)

@@ -75,7 +75,7 @@ class Workspace:
     def attach_session(self, session, simulation, path):
         self.close_live()
         self.session, self.simulation = session, simulation
-        self.live_path, self.live_dirty = Path(path), False
+        self.live_path, self.live_dirty = (Path(path) if path else None), False
 
     def attach_bridge(self, bridge):
         self._close_bridge()
@@ -107,8 +107,10 @@ class Workspace:
         self.live_path, self.live_dirty = None, False
         if session is None:
             return errors
+        attached = getattr(session, "attached", False)
         try:
-            if simulation is not None:
+            # The user's own Proteus (attach mode) keeps its simulation state.
+            if simulation is not None and not attached:
                 simulation.stop()
         except Exception:
             pass

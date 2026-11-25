@@ -37,7 +37,7 @@ def snapshot(session, *, timer=False):
         raise RuntimeError("The Session's current project window is not ready")
     owner = w.DWORD()
     native.u.GetWindowThreadProcessId(window["hwnd"], c.byref(owner))
-    if owner.value != pid or not window["title"].startswith(session.project.stem + " - "):
+    if owner.value != pid or not window["title"].strip("* ").startswith(session._stem + " - "):
         raise RuntimeError("Interactive state project-window ownership mismatch")
     executable = Path(session.process.args[0]).resolve(strict=True)
     if executable.name.upper() != "PDS.EXE":

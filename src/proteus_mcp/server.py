@@ -355,14 +355,16 @@ def configure_power(rails: dict, mapping: dict = None):
 
 # ---------------------------------------------------------------- live
 @tool
-def open_in_proteus():
-    """[live] Launch a hidden Proteus on the saved project file (the project must be saved and have no
-    unsaved edits). Replaces any previous live session. Required before compile_netlist,
-    set_property_live, sim_* and probe_*."""
+def open_in_proteus(visible: bool = False):
+    """[live] Launch Proteus on the saved project file (the project must be saved and have no
+    unsaved edits). visible=false (default) runs it hidden; visible=true shows the window so the
+    user can watch (they should not click in it while a tool runs). Replaces any previous live
+    session. Required before compile_netlist, set_property_live, export_image, run_erc, sim_* and
+    probe_*. To use a Proteus the user already opened, call attach_proteus instead."""
     from .engine import Session, Simulation
     path = W.need_saved()
     W.close_live()
-    session = Session(path)
+    session = Session(path, visible=True) if visible else Session(path)
     try:
         simulation = Simulation(session)
     except Exception:
@@ -370,7 +372,58 @@ def open_in_proteus():
         W.close_live()
         raise
     W.attach_session(session, simulation, path)
-    return {"pid": session.pid, "project": str(path)}
+    return {"pid": session.pid, "project": str(path), "visible": bool(visible)}
+
+
+@tool
+def attach_proteus(project: str = None, pid: int = None):
+    """[live] Work in a Proteus the user already has open (their window, their project) instead of
+    launching one. Picks the Proteus showing `project` (a .pdsprj path, also loaded for offline
+    reading), or `pid`, or the only one running. All live tools then act on it. Safety: it is never
+    closed or saved without an explicit request; close_proteus only detaches and leaves its
+    simulation as is. To add parts or wires: save in Proteus, edit with the offline tools,
+    save_project(overwrite=true), then reload_in_proteus."""
+    from .engine import Session, Simulation
+    from .engine.proteus_native import running_proteus
+    running = running_proteus()
+    if pid is None:
+        pick = running
+        if project:
+            pick = [r for r in running if r["project_stem"] == Path(project).stem]
+        if len(pick) != 1:
+            raise WorkspaceError(
+                f"{len(pick)} matching Proteus windows: {[(r['pid'], r['project_stem']) for r in running]}",
+                "open the project in Proteus first, or pass pid=... / project=...")
+        pid = pick[0]["pid"]
+    if project is None and W.path is not None:
+        stem = next((r["project_stem"] for r in running if r["pid"] == pid), None)
+        if W.path.stem == stem:
+            project = str(W.path)
+    W.close_live()
+    loaded, warning = False, None
+    if project and not (W.path is not None and Path(project).resolve() == W.path.resolve()):
+        try:
+            from .engine import Circuit
+            W.set_circuit(Circuit.open(project), project)  # before attaching: this resets live state
+            loaded = True
+        except Exception as exc:  # unsupported objects: live tools still work
+            warning = f"offline tools cannot edit this project file: {exc}"
+    elif project:
+        loaded = True
+    session = Session.attach(int(pid), project)
+    simulation = Simulation(session)
+    W.attach_session(session, simulation, project)
+    return {"pid": session.pid, "shows": session._stem, "project": project,
+            "offline_loaded": loaded, "warning": warning}
+
+
+@tool
+def reload_in_proteus():
+    """[live] Make the attached/opened Proteus re-open the project file from disk (after
+    save_project). If Proteus has unsaved changes it is NOT reloaded: the prompt is cancelled,
+    nothing is lost or saved, and you should ask the user to save or discard first."""
+    project = W.need_session().reload()
+    return {"reloaded": str(project)}
 
 
 @tool
@@ -391,7 +444,8 @@ def set_property_live(ref: str, properties: dict):
 @tool
 def close_proteus(save: bool = False):
     """[live] Stop the simulation and close Proteus (and the probe bridge). save=true saves the live
-    project first. Always call this when finished so no PDS.EXE stays running."""
+    project first. Always call this when finished so no PDS.EXE stays running. For a Proteus joined
+    with attach_proteus it only detaches: the window, project and simulation stay as they are."""
     errors = W.close_live(save=bool(save))
     return {"closed": True, "warnings": errors}
 
@@ -631,7 +685,7 @@ def run_erc(report_path: str = None):
     report (default: next to the project as <name>.erc.txt, replaced if it exists). Needs open_in_proteus."""
     from .exports import erc
     session = W.need_session()
-    target = Path(report_path) if report_path else session.project.with_suffix(".erc.txt")
+    target = Path(report_path) if report_path else (session.project.with_suffix(".erc.txt") if session.project else session._workdir / "erc.txt")
     if not report_path and target.exists():
         target.unlink()
     result = erc(session, target)

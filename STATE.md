@@ -54,6 +54,12 @@ user-authorized public GitHub repository `mahmoud-elghamry/proteus-mcp`.
   measure() ignored the first observation as a pulse; probe signal names stored on the part
   (`SIGNALS`) and translated by the server (raw pin-number readings unchanged).
 - Offline suite: 190 passed. Live suite (-m proteus) on Proteus 8.13: 5 passed (incl. stdio MCP e2e).
+- Attach/visible (2026-11-25), 54 tools: `open_in_proteus(visible)`, `attach_proteus`,
+  `reload_in_proteus`. Live-verified against a normally launched Proteus on the user desktop:
+  image, ERC 0/0, testbench 99.99 Hz in attached window, offline add R1 + save + reload -> R1 in
+  Proteus netlist, detach leaves Proteus running; reload with unsaved changes refused, prompt
+  cancelled (&Cancel), edit preserved; visible launch shows on the user desktop.
+  Also fixed: adding a device already embedded in an opened project (uses the project's own definition).
 
 ## Supported boundary
 

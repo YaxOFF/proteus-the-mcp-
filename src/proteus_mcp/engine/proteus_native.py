@@ -158,6 +158,70 @@ class HiddenProcess:
             self._handle = None
 
 
+class ExistingProcess:
+    """Popen look-alike for a Proteus the *user* started (attach mode).
+
+    It can watch the process but deliberately cannot end it: terminate/kill are no-ops."""
+
+    def __init__(self, pid):
+        self.pid, self.returncode = pid, None
+        self._handle = k.OpenProcess(0x00100000 | 0x1000, False, pid)  # SYNCHRONIZE | QUERY_LIMITED
+        if not self._handle:
+            raise c.WinError(c.get_last_error())
+        path = c.create_unicode_buffer(32768)
+        size = w.DWORD(len(path))
+        if not k.QueryFullProcessImageNameW(self._handle, 0, path, c.byref(size)):
+            raise c.WinError(c.get_last_error())
+        if path.value.lower().rsplit("\\", 1)[-1] != "pds.exe":
+            raise ValueError(f"PID {pid} is not PDS.EXE")
+        self.args = [path.value]
+
+    def poll(self):
+        if self.returncode is None and k.WaitForSingleObject(self._handle, 0) == 0:
+            code = w.DWORD()
+            k.GetExitCodeProcess(self._handle, c.byref(code))
+            self.returncode = code.value
+        return self.returncode
+
+    def wait(self, timeout=None):
+        import subprocess
+        ms = 0xFFFFFFFF if timeout is None else int(timeout * 1000)
+        if k.WaitForSingleObject(self._handle, ms) != 0:
+            raise subprocess.TimeoutExpired(self.args, timeout)
+        return self.poll()
+
+    def terminate(self):
+        """Never end the user's Proteus."""
+
+    kill = terminate
+
+    def __del__(self):
+        if getattr(self, "_handle", None):
+            k.CloseHandle(self._handle)
+            self._handle = None
+
+
+def running_proteus():
+    """Proteus main windows on the user's own desktop: [{pid, hwnd, title, project_stem}]."""
+    rows = []
+
+    @CALLBACK
+    def visit(hwnd, _):
+        if u.IsWindowVisible(hwnd) and u.GetMenu(hwnd):
+            text = c.create_unicode_buffer(u.GetWindowTextLengthW(hwnd) + 1)
+            u.GetWindowTextW(hwnd, text, len(text))
+            marker = " - Proteus 8 "
+            if marker in text.value:
+                owner = w.DWORD()
+                u.GetWindowThreadProcessId(hwnd, c.byref(owner))
+                rows.append(dict(pid=owner.value, hwnd=hwnd, title=text.value,
+                                 project_stem=text.value.split(marker)[0].strip(" *")))
+        return True
+
+    u.EnumWindows(visit, 0)
+    return rows
+
+
 def menus(menu, prefix=""):
     rows = []
     for index in range(u.GetMenuItemCount(menu)):

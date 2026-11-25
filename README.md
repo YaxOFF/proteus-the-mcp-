@@ -2,7 +2,7 @@
 
 Let an MCP-compatible assistant create, inspect and edit Labcenter Proteus 8
 schematics, control simulations, read digital/analog probes, and import KiCad
-connectivity. The server exposes 52 tools over stdio.
+connectivity. The server exposes 54 tools over stdio.
 
 [العربية](README.ar.md)
 
@@ -124,6 +124,18 @@ artwork, saves it in the installed format and caches `template-v2.pdsprj` under
 `%LOCALAPPDATA%\proteus-mcp`. The original sample is never edited. Master-sheet
 cleanup uses Delete and leaves the user's clipboard alone.
 After changing Proteus versions, remove this generated cache and let it rebuild.
+
+## Watch it, or let it use your own Proteus
+
+- **Watch:** `open_in_proteus(visible=true)` launches Proteus on your normal desktop instead of the
+  hidden one. No configuration or restart needed. Avoid clicking in it while a tool is running.
+- **Your own window:** open the project in Proteus yourself, then `attach_proteus(project)`.
+  Images, ERC, netlist, property changes, firmware loading, simulation, probes and testbenches all
+  act on your window. Safety: it never closes your Proteus, never saves unless asked, and
+  `close_proteus` only detaches (your simulation keeps its state).
+- **Adding parts to your open project:** save in Proteus, edit with the offline tools,
+  `save_project(overwrite=true)`, then `reload_in_proteus`. If Proteus has unsaved changes the
+  reload is refused (its prompt is cancelled), so nothing of yours is lost or overwritten in Proteus.
 
 ## Typical workflow
 
