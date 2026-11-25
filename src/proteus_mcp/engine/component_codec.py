@@ -55,7 +55,8 @@ def _entities(data):
         pos += 12
         # Native ADI property edits change this auxiliary tail word from -1 to
         # 0 on the edited entity. Both exact forms have passed native roundtrips.
-        _need(kind == 2 and zero == a == 0 and b in (0xFFFFFFFF, 0), "Unknown entity layout")
+        # b is the gate (element) index of a multi-element package such as U1:B, else -1.
+        _need(kind == 2 and zero == a == 0 and (b == 0xFFFFFFFF or b < 64), "Unknown entity layout")
         records[ref] = {"index": index, "object_id": object_id,
                         "property_index": property_index, "pins": pins, "auxiliary": b}
     _need(data[pos:pos + 14] == bytes.fromhex("0100000001000000000001000000"),
@@ -69,7 +70,17 @@ def _value_properties(properties, value):
                   lambda match: match.group(1) + value + match.group(2), properties)
 
 
-def _render_component(template, ref, value, x, y, index):
+REF = re.compile(r"([A-Z][A-Z0-9_]*[0-9][A-Z0-9_]*)(?::([A-Z]))?")
+
+
+def split_ref(ref):
+    """'U5:B' -> ('U5', 1); 'U5' -> ('U5', None). Gates of one package share its CDB record."""
+    match = REF.fullmatch(ref) if isinstance(ref, str) else None
+    _need(match is not None, "Invalid reference")
+    return match[1], None if match[2] is None else ord(match[2]) - ord("A")
+
+
+def _render_component(template, ref, value, x, y, index, package_index=None):
     dx, dy = x - template["x"], y - template["y"]
     actual_properties = _value_properties(template["properties"], value)
     # Proteus 8.16 does not consume a separate property body of 50 bytes or
@@ -98,12 +109,14 @@ def _render_component(template, ref, value, x, y, index):
     entity = struct.pack("<4I", index, 2, 0, index) + _short(ref)
     entity += struct.pack("<I", len(template["pins"]))
     entity += b"".join(_short(name) + _short(number) for name, number in template["pins"])
-    auxiliary = template.get("entity_auxiliary", 0xFFFFFFFF)
-    _need(auxiliary in (0xFFFFFFFF, 0), "Unknown entity auxiliary word")
-    entity += struct.pack("<3I", 0, index, auxiliary)
+    package, element = split_ref(ref)
+    auxiliary = template.get("entity_auxiliary", 0xFFFFFFFF) if element is None else element
+    _need(auxiliary == 0xFFFFFFFF or auxiliary < 64, "Unknown entity auxiliary word")
+    package_index = index if package_index is None else package_index
+    entity += struct.pack("<3I", 0, package_index, auxiliary)
     props = actual_properties.encode("ascii") + b"\0"
-    component = struct.pack("<5I", index, 1, 0, 0, 0)
-    component += b"".join(_short(text) for text in (ref, value, template["device"], template["package"]))
+    component = struct.pack("<5I", package_index, 1, 0, 0, 0)
+    component += b"".join(_short(text) for text in (package, value, template["device"], template["package"]))
     component += struct.pack("<I", len(props) + 4) + props
     return bytes(result), entity, component
 
@@ -277,7 +290,7 @@ class Circuit:
         """
         from .device_library import Library, definition_groups, describe_definition
 
-        donor_definitions = None
+        donor_definitions, shared = None, None
         own = definition_groups(self._dsn)["devices"]
         if donor_project is None and library is None and name in own and name not in self.templates:
             # Already embedded (no instance yet): register the project's own definition, so new
@@ -300,6 +313,7 @@ class Circuit:
         else:
             catalogue = Library()
             metadata = catalogue.get(name, library)
+            shared = catalogue.shared_pinout(metadata)
             entry, body = catalogue.definition(name, library)
             device_entry = _short(metadata["name"]) + struct.pack("<I", entry["timestamp"]) + body
         _need(metadata["pin_parse_status"] == "parsed", metadata["pin_parse_status"])
@@ -379,6 +393,10 @@ class Circuit:
             # Graphic numbers may be reused annotations. CDB pin fields must use
             # the selected package's mapping, including grouped pads and '*'.
             pins = [(logical, mapping[logical]) for logical, _ in pins]
+        elif shared is not None:
+            # Multi-element packages (74HC08 ...) keep per-gate pads in a shared *PINOUT record.
+            _need(set(shared["pins"]) == {pin[0] for pin in pins}, "Shared pinout does not match the symbol pins")
+            pins = [(logical, shared["pins"][logical][0]) for logical, _ in pins]
         pin_offsets = {pin["name"]: pin["tip"] for pin in geometry}
         directions = {}
         for pin in geometry:
@@ -418,7 +436,8 @@ class Circuit:
             "record_tag": 8 if any(re.match(r'\{?ACTIVE=', line)
                                   for line in metadata['sections'].get('DEVICE', [])) else 0,
             "show_properties": simple_analogue,
-            "library": entry["path"], "model_evidence": metadata["models"]}
+            "library": entry["path"], "model_evidence": metadata["models"],
+            "element_pads": shared["pins"] if shared else None}
         # Commit only after parsing and validating the entire imported dependency set.
         self._dsn = bytes(dsn)
         self._members["ROOT.DSN"] = self._dsn
@@ -433,8 +452,15 @@ class Circuit:
     def add(self, device, ref, value, x, y, *, rotation=0, mirror_x=False, mirror_y=False, properties=None,
             hide_properties=False):
         _need(device in self.templates, "Device is not in the imported template library")
-        _need(isinstance(ref, str) and re.fullmatch(r"[A-Z][A-Z0-9_]*[0-9][A-Z0-9_]*", ref), "Invalid reference")
+        package, element = split_ref(ref)
         _need(len(ref) <= 63 and not any(part["ref"] == ref for part in self._parts), "Duplicate/oversized reference")
+        for other in self._parts:
+            other_package, other_element = split_ref(other["ref"])
+            if other_package == package:
+                _need(element is not None and other_element is not None,
+                      f"{package} is used both as a whole part and as gates")
+                _need(other["device"] == device and other["value"] == value,
+                      f"All gates of {package} must use the same device and value")
         _need(isinstance(value, str) and value and all(32 <= ord(c) < 127 for c in value), "Value must be printable ASCII")
         _short(value)
         _need(type(x) is int and type(y) is int and -2**31 <= x < 2**31 and -2**31 <= y < 2**31, "Invalid coordinate")
@@ -501,6 +527,13 @@ class Circuit:
     def _template(self, part):
         """Derive one instance's properties and orientation without changing its library template."""
         template = copy.deepcopy(part.get("template") or self.templates[part["device"]])
+        element = split_ref(part["ref"])[1]
+        if element is not None and not part.get("template"):
+            pads = template.get("element_pads")
+            _need(pads is not None, f"{part['device']} has no gates; use a reference without ':'")
+            gates = len(next(iter(pads.values())))
+            _need(element < gates, f"{part['device']} has {gates} gates")
+            template["pins"] = [(name, pads[name][element]) for name, _ in template["pins"]]
         angle = part.get("rotation", 0)
         mx, my = part.get("mirror_x", False), part.get("mirror_y", False)
         _need(type(angle) is int and angle % 90 == 0 and type(mx) is type(my) is bool,
@@ -967,12 +1000,18 @@ class Circuit:
             _need(hashlib.sha256(self.source.read_bytes()).digest() == self._source_digest,
                   "Source changed outside this Circuit; reopen it before saving")
         objects, entities, properties = [], [], []
-        resolved = []
+        resolved, packages = [], {}
         for index, part in enumerate(self._parts, 1):
             template = self._template(part)
             resolved.append(dict(part, template=template))
-            obj, entity, props = _render_component(template, **{k: part[k] for k in ("ref", "value", "x", "y")}, index=index)
-            objects.append(obj); entities.append(entity); properties.append(props)
+            package = split_ref(part["ref"])[0]
+            known = package in packages
+            packages.setdefault(package, len(packages) + 1)
+            obj, entity, props = _render_component(template, **{k: part[k] for k in ("ref", "value", "x", "y")},
+                                                   index=index, package_index=packages[package])
+            objects.append(obj); entities.append(entity)
+            if not known:  # gates of one package share a single CDB component record
+                properties.append(props)
         count = len(self._parts)
         from .net_objects import encode_net_body
         body = encode_net_body(objects, resolved, self.templates, self._connections, self._body, self._dsn, self._terminals)
@@ -986,7 +1025,7 @@ class Circuit:
         _need(struct.unpack_from("<I", dsn, pointer)[0] == self._default, "Default-sheet pointer mismatch")
         struct.pack_into("<I", dsn, pointer, self._default + delta)
         cdb = self._cdb[:_cdb_entity_table_offset(self._cdb)] + struct.pack("<I", count) + b"".join(entities) + self._bridge
-        cdb += struct.pack("<I", count) + b"".join(properties) + b"\0" * 4
+        cdb += struct.pack("<I", len(properties)) + b"".join(properties) + b"\0" * 4
         metadata = ET.fromstring(self._members["PROJECT.XML"])
         metadata.set("TITLE", self._title if title is None else title)
         members = dict(self._members, **{"ROOT.DSN": bytes(dsn), "ROOT.CDB": cdb,

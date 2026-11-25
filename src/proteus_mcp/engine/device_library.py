@@ -123,6 +123,50 @@ class Library:
         entry, body = self.definition(name, library)
         return describe_definition(entry, body)
 
+    def shared_pinout(self, metadata):
+        """The named package pinout a multi-element device points to with PINOUT=<name>.
+
+        Proteus stores these (e.g. ``*PINOUT 74HC08``, ``ELEMENTS=4``, ``IP A = 1,4,9,12``) as text
+        records in the device's own LIB file. Returns None when the device has no such reference.
+        """
+        name = properties_dict(metadata["sections"].get("DEVICE", [])).get("PINOUT")
+        if not name:
+            return None
+        data = Path(metadata["path"]).read_bytes()
+        texts = set()
+        for match in re.finditer(re.escape(b"*PINOUT " + name.encode("cp1252")) + rb"\r?\n", data):
+            end = data.find(b"\0", match.start())
+            _need(end > match.start(), "Unterminated shared pinout")
+            texts.add(data[match.start():end].decode("cp1252"))
+        _need(len(texts) == 1, f"Expected one shared pinout {name}, found {len(texts)}")
+        return parse_shared_pinout(texts.pop())
+
+
+def parse_shared_pinout(text):
+    """Parse a ``*PINOUT`` text record: {"elements": n, "pins": {name: [pad per element]},
+    "power": {name: pad}}. Pad lists keep the library's order, so element k uses index k."""
+    elements, pins, power = None, {}, {}
+    for line in text.splitlines()[1:]:
+        line = line.strip()
+        if not line or line.startswith(("PINS=", "PINSWAP=", "GATESWAP=")):
+            continue
+        count = re.fullmatch(r"ELEMENTS\s*=\s*(\d+)", line)
+        if count:
+            elements = int(count[1])
+            continue
+        entry = re.fullmatch(r"([A-Z]{2})\s+(\(?)([^()=\s]+)\)?\s*=\s*([0-9A-Za-z,]+)", line)
+        _need(entry is not None, f"Unsupported shared pinout line: {line}")
+        kind, hidden, pin, pads = entry.groups()
+        pads = pads.split(",")
+        if hidden:
+            power[pin] = pads[0]
+        else:
+            _need(pin not in pins, f"Duplicate shared pinout pin: {pin}")
+            pins[pin] = pads
+    _need(elements and pins and all(len(pads) == elements for pads in pins.values()),
+          "Shared pinout pad lists do not match ELEMENTS")
+    return {"elements": elements, "pins": pins, "power": power}
+
 
 def definition_groups(dsn):
     """Decode the two name/timestamp/length-delimited graphics and device groups."""

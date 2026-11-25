@@ -151,17 +151,19 @@ class Project:
         candidates = []
         # A candidate is accepted only after four complete typed text records,
         # an instance tail, and an exact independently decoded CDB record agree.
-        for match in re.finditer(rb"\xff[\x01-\x3f][A-Z][A-Z0-9_+?\-]*", dsn):
+        for match in re.finditer(rb"\xff[\x01-\x3f][A-Z][A-Z0-9_+?\-:]*", dsn):
             try:
                 item = _dsn_component(dsn, match.start())
                 ref, value, device, props = (f["text"] for f in item["fields"])
-                _need(re.fullmatch(r"[A-Z][A-Z0-9_+?\-]*[0-9][A-Z0-9_+?\-]*", ref), "Not a reference")
-                needle = b"".join(bytes([len(s)]) + s.encode("ascii") for s in (ref, value, device))
+                _need(re.fullmatch(r"[A-Z][A-Z0-9_+?\-]*[0-9][A-Z0-9_+?\-]*(:[A-Z])?", ref), "Not a reference")
+                # A gate (U1:B) shares the CDB component record of its package (U1).
+                package = ref.split(":")[0]
+                needle = b"".join(bytes([len(s)]) + s.encode("ascii") for s in (package, value, device))
                 found = cdb.find(needle)
                 _need(found >= 24 and cdb.find(needle, found + 1) < 0, "Ambiguous/missing CDB component")
                 found -= 20
                 other, _ = _cdb_component(cdb, found)
-                _need((ref, value, device, props) == (other["ref"], other["value"],
+                _need((package, value, device, props) == (other["ref"], other["value"],
                       other["device"], other["properties_raw"]), "DSN/CDB fields disagree")
                 item["cdb_offset"] = found
                 item["cdb"] = other
@@ -183,11 +185,12 @@ class Project:
             record, end = _cdb_component(cdb, end)
             records.append(record)
         _need(bytes(cdb[end:]) == b"\0" * 4, "Unexpected data after CDB component table")
-        _need(len(candidates) == count, "Not all CDB components have supported DSN records")
+        _need(len({i["cdb"]["ref"] for i in candidates}) == count,
+              "Not all CDB components have supported DSN records")
         _need({r["instance_id"] for r in records} == {r["cdb"]["instance_id"] for r in candidates},
               "DSN/CDB instance sets disagree")
-        self._components = {item["cdb"]["ref"]: item for item in candidates}
-        _need(len(self._components) == count, "Duplicate component references")
+        self._components = {item["fields"][0]["text"]: item for item in candidates}
+        _need(len(self._components) == len(candidates), "Duplicate component references")
 
     def components(self):
         result = []
