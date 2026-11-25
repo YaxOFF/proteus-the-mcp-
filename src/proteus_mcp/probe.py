@@ -16,8 +16,9 @@ pipe ``\\\\.\\pipe\\proteus_mcp`` (see ``proteus_mcp.bridge_client.BridgeClient`
   SPICE and a DSIM model for every DLL part and asks the SPICE side which pins are analog
   *before* setup, so the DLL decides by that name: only ``MCPBRIDGE_A`` claims pins as
   analog; any other name (``MCPBRIDGE_D``) is a digital probe.
-* One header gives up to 16 digital pins (CONN-SIL18 is the largest size that exists
-  with >= 16 pins) or 8 analog pins (CONN-SIL8/10). A circuit can hold one digital and
+* One header gives up to 60 digital pins or 8 analog pins. Up to 18 pins use a
+  ``CONN-SIL<n>`` header; larger digital probes use ``CONN-DIL<n>`` (up to CONN-DIL60, pins
+  also named "1".."n"). The bridge DLL itself has no pin limit. A circuit can hold one digital and
   one analog probe at once; both answer on the same pipe. Only the first digital probe
   receives READ/SET/HOLD/STEP, several analog probes are listed as ``REF.PIN``.
 * Wiring: the engine only routes simple wires, so each probe pin is joined to its target
@@ -44,8 +45,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 PRIMITIVES = {"digital": "DIGITAL,MCPBRIDGE_D", "analog": "ANALOG,MCPBRIDGE_A"}
-LIMITS = {"digital": 16, "analog": 8}
-SIL_SIZES = tuple(range(1, 11)) + (12, 18)   # CONN-SIL sizes that exist in CONNDVC
+LIMITS = {"digital": 60, "analog": 8}
+# Header sizes that exist in CONNDVC, smallest first: single-row, then dual-row for big probes.
+HEADERS = ([(n, f"CONN-SIL{n}") for n in (*range(1, 11), 12, 18)]
+           + [(n, f"CONN-DIL{n}") for n in (20, 30, 34, 40, 50, 60)])
 LIBRARY = "CONNDVC"
 
 
@@ -153,7 +156,7 @@ def add_probe(circuit, ref, x, y, kind="digital", pins=(), *, dll=None, pipe="pr
 
     ``pins`` maps a signal name to the circuit endpoint it observes, e.g.
     ``{"CLK": "U1.CLK", "Q": "U1.Q"}`` (a plain list of endpoints uses the endpoint as the
-    name). Up to 16 (digital) / 8 (analog) signals; the i-th signal goes to probe pin i.
+    name). Up to 60 (digital) / 8 (analog) signals; the i-th signal goes to probe pin i.
     Returns a ``Probe`` whose ``.signals()`` renames bridge readings back to signal names.
     """
     kind = _kind(kind)
@@ -162,8 +165,7 @@ def add_probe(circuit, ref, x, y, kind="digital", pins=(), *, dll=None, pipe="pr
         raise ValueError("pins must name at least one endpoint to observe")
     if len(pins) > LIMITS[kind]:
         raise ValueError(f"a {kind} probe supports at most {LIMITS[kind]} pins, got {len(pins)}")
-    size = next(n for n in SIL_SIZES if n >= len(pins))
-    device = f"CONN-SIL{size}"
+    device = next(name for size, name in HEADERS if size >= len(pins))
     names = [str(i) for i in range(1, len(pins) + 1)]
     for signal in pins:
         if not re.fullmatch(r"[!-~]+", str(signal)) or set(str(signal)) & set(",={}"):
