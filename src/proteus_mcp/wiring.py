@@ -51,8 +51,14 @@ def link(circuit, a, b, style="auto", name=None):
         circuit.connect(a, b)
         return {"style": "routed", "net": None}
     if style in ("auto", "wire") and facing_straight(a_pos, a_dir, b_pos, b_dir):
-        circuit.connect(a, b, points=[a_pos, b_pos])
-        return {"style": "wire", "net": None}
+        try:
+            # Facing pins on one line: the router's shortest candidate is the single straight
+            # segment. Not pinning the points keeps the wire branchable (probes, junctions).
+            circuit.connect(a, b)
+            return {"style": "wire", "net": None}
+        except UnsupportedFormat:
+            if style == "wire":
+                raise  # e.g. joining a net that already has three or more pins
     if style == "wire":
         raise ValueError("The pins are not on one straight line facing each other; "
                          "move a part, or use style='label'")
@@ -75,8 +81,31 @@ def link(circuit, a, b, style="auto", name=None):
     except UnsupportedFormat:
         for terminal in added:
             circuit.delete_terminal(terminal)
-        raise
+        if style == "label":
+            raise
+        # A pin that already carries wires cannot take a label here; use a routed wire instead.
+        circuit.connect(a, b)
+        return {"style": "routed", "net": None}
     return {"style": "label", "net": label}
+
+
+AUTO = re.compile(r"N_[A-Za-z0-9_]+")
+
+
+def promote_auto_label(circuit, endpoint, kind, name):
+    """If ``endpoint``'s net is only joined by auto labels (N_...), turn them into ``kind``/``name``
+    (e.g. ground GND) instead of stacking a second terminal on the pin. Returns True if done."""
+    pin = circuit._endpoint(endpoint)
+    net = next((group for group in circuit.nets() if pin in [tuple(item) for item in group]), [])
+    members = {tuple(item) for item in net}
+    autos = [t for t in circuit.terminals() if t["kind"] == "label" and t.get("pin") is not None
+             and tuple(t["pin"]) in members and AUTO.fullmatch(t.get("name") or "")]
+    if not autos or len({t["name"] for t in autos}) != 1:
+        return False
+    label = autos[0]["name"]
+    for terminal in [t for t in circuit.terminals() if t["kind"] == "label" and t.get("name") == label]:
+        circuit.update_terminal(terminal["id"], kind=kind, name="" if kind == "ground" and name == "GND" else name)
+    return True
 
 
 def _auto_name(circuit, key):

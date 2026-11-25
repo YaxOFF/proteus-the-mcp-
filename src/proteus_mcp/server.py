@@ -301,7 +301,12 @@ def add_terminal(kind: str, name: str, pin: str = None, x_mm: float = None, y_mm
     """[edit] Add a terminal. kind is one of label, input, output, bidir, power, ground. `name` is
     the net name (e.g. GND, VCC, SIG). `pin` ('REF.PIN') attaches it to a pin; x_mm/y_mm optionally
     fix its position. Returns the terminal id."""
+    from .wiring import promote_auto_label
     position = (_mm(x_mm), _mm(y_mm)) if x_mm is not None and y_mm is not None else None
+    if pin and position is None and kind in ("label", "power", "ground") and             promote_auto_label(W.need_circuit(), pin, kind, name):
+        # The pin was joined by connect()'s automatic labels: they now carry this net name/symbol.
+        W.touch()
+        return {"terminal_id": None, "promoted_auto_labels": True}
     terminal = _edit(lambda c: c.add_terminal(kind, name, pin, position=position))
     return {"terminal_id": terminal}
 
@@ -507,7 +512,8 @@ def export_graph(graph_name: str, csv_path: str):
 
 # ---------------------------------------------------------------- probe
 @tool
-def add_probe(ref: str, x_mm: float = None, y_mm: float = None, kind: str = "digital", pins: dict = None):
+def add_probe(ref: str, x_mm: float = None, y_mm: float = None, kind: str = "digital",
+              pins: dict | list = None):
     """[probe] Place a live-simulation probe part (wired to MCPBRIDGE.DLL) in the offline project.
     kind 'digital' or 'analog'; `pins` maps signal names to 'REF.PIN' endpoints, e.g.
     {"LED": "U1.PB5"} (a list of endpoints also works). Leave x_mm/y_mm empty to place it
