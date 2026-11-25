@@ -278,11 +278,15 @@ def import_device(name: str):
 
 
 @tool
-def connect(a: str, b: str):
-    """[edit] Wire two pins. Endpoints are 'REF.PIN' using a pin name or an unambiguous number,
-    e.g. connect('R1.2', 'C1.1')."""
-    _edit(lambda c: c.connect(a, b))
-    return {"connected": [a, b]}
+def connect(a: str, b: str, style: str = "auto", net_name: str = None):
+    """[edit] Connect two pins. Endpoints are 'REF.PIN' using a pin name or an unambiguous number,
+    e.g. connect('R1.2', 'C1.1'). style='auto' draws one straight wire when the pins face each other
+    on one line, otherwise puts the same net label on both pins (clean, no zigzag wires);
+    'label' always uses labels (net_name optional), 'wire' only a straight wire, 'routed' the
+    multi-segment router. Tip: align parts so related pins line up for straight wires."""
+    from .wiring import link
+    result = _edit(lambda c: link(c, a, b, style=style, name=net_name))
+    return {"connected": [a, b], **result}
 
 
 @tool
@@ -503,16 +507,24 @@ def export_graph(graph_name: str, csv_path: str):
 
 # ---------------------------------------------------------------- probe
 @tool
-def add_probe(ref: str, x_mm: float, y_mm: float, kind: str = "digital", pins: list = None):
+def add_probe(ref: str, x_mm: float = None, y_mm: float = None, kind: str = "digital", pins: dict = None):
     """[probe] Place a live-simulation probe part (wired to MCPBRIDGE.DLL) in the offline project.
-    kind 'digital' or 'analog'; `pins` lists 'REF.PIN' endpoints to observe. Then save_project,
-    open_in_proteus and sim_start before using probe_read etc."""
-    from .probe import add_probe as place
+    kind 'digital' or 'analog'; `pins` maps signal names to 'REF.PIN' endpoints, e.g.
+    {"LED": "U1.PB5"} (a list of endpoints also works). Leave x_mm/y_mm empty to place it
+    automatically to the right of the observed parts. Then save_project, open_in_proteus and
+    sim_start before using probe_read etc."""
+    from .probe import add_probe as place, auto_position
     kind = kind.lower()
     if kind not in ("digital", "analog"):
         raise ValueError("kind must be 'digital' or 'analog'")
-    _edit(lambda c: place(c, ref, _mm(x_mm), _mm(y_mm), kind=kind, pins=pins))
-    return {"ref": ref, "kind": kind, "pins": pins}
+    auto = x_mm is None or y_mm is None
+    if auto:
+        x, y = auto_position(W.need_circuit(), pins or {})
+    else:
+        x, y = _mm(x_mm), _mm(y_mm)
+    _edit(lambda c: place(c, ref, x, y, kind=kind, pins=pins, align=auto))
+    x_mm, y_mm = _to_mm(x), _to_mm(y)
+    return {"ref": ref, "kind": kind, "pins": pins, "x_mm": x_mm, "y_mm": y_mm}
 
 
 _EVENT_LOG = []  # every digital edge read from the probe (EVENTS drains the bridge)

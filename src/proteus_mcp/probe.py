@@ -123,49 +123,32 @@ def _normalise(pins):
     return {str(endpoint): endpoint for endpoint in pins}
 
 
-def _named_terminal(circuit, endpoint):
-    """A label/power/ground terminal already naming the net of ``endpoint`` (or None)."""
-    pin = circuit._endpoint(endpoint)
-    net = next((group for group in circuit.nets() if pin in [tuple(item) for item in group]), [])
-    members = {tuple(item) for item in net}
-    for terminal in circuit.terminals():
-        name = terminal.get("name") or ("GND" if terminal["kind"] == "ground" else "")
-        if (terminal["kind"] in ("label", "power", "ground") and name and terminal.get("pin") is not None
-                and tuple(terminal["pin"]) in members):
-            return terminal["kind"], name
-    return None
-
-
 def _wire(circuit, probe_pin, endpoint, net):
-    """Join ``probe_pin`` to ``endpoint``.
-
-    The codec only routes simple wires, so in order: reuse a label/power/ground terminal that
-    already names the target net (no routing needed); draw a wire; put the same new label on
-    both pins (target pin must carry no wire).
-    """
+    """Join ``probe_pin`` to ``endpoint`` with a straight wire or a label pair (never a zigzag)."""
     from .engine.proteus_project import UnsupportedFormat
-    named = _named_terminal(circuit, endpoint)
-    if named is not None:
-        circuit.add_terminal(named[0], named[1], pin=probe_pin)
-        return
+    from .wiring import link
     try:
-        circuit.connect(probe_pin, endpoint)
-        return
-    except UnsupportedFormat as wire_error:
-        reason = str(wire_error)
-    added = []
-    try:
-        for pin in (probe_pin, endpoint):
-            added.append(circuit.add_terminal("label", net, pin=pin))
-    except UnsupportedFormat as label_error:
-        for terminal in added:
-            circuit.delete_terminal(terminal)
-        raise ProbeError(f"cannot wire {probe_pin} to {endpoint}: {reason}. Observe a pin whose net "
-                         "has a net label, ground or power terminal, move the probe (x, y), "
-                         "or route the net manually.") from label_error
+        link(circuit, probe_pin, endpoint, name=net)
+    except (UnsupportedFormat, ValueError) as error:
+        raise ProbeError(f"cannot connect {probe_pin} to {endpoint}: {error}. Move the probe (x, y) "
+                         "or label the net first.") from error
 
 
-def add_probe(circuit, ref, x, y, kind="digital", pins=(), *, dll=None, pipe="proteus_mcp", **properties):
+def auto_position(circuit, pins):
+    """A free spot right of the observed parts, level with the first observed pin (native units)."""
+    endpoints = list(_normalise(pins).values()) if pins else []
+    refs = {circuit._endpoint(e)[0] for e in endpoints}
+    if not refs:
+        raise ValueError("pins must name at least one endpoint to observe")
+    xs = [p["position"][0] for ref in refs for p in circuit.pins(ref)]
+    first = circuit._endpoint(endpoints[0])
+    y = next(p["position"][1] for p in circuit.pins(first[0]) if p["name"] == first[1])
+    x = max(xs) + 3000000  # 30 mm of room for the net labels
+    return int(round(x / 254000) * 254000), int(round(y / 254000) * 254000)
+
+
+def add_probe(circuit, ref, x, y, kind="digital", pins=(), *, dll=None, pipe="proteus_mcp", align=False,
+              **properties):
     """Place a probe header at (x, y), wire it to ``pins`` and attach MCPBRIDGE.DLL.
 
     ``pins`` maps a signal name to the circuit endpoint it observes, e.g.
@@ -190,7 +173,14 @@ def add_probe(circuit, ref, x, y, kind="digital", pins=(), *, dll=None, pipe="pr
     props = _properties(kind, names, dll, pipe, properties)
     if device not in circuit.templates:
         circuit.import_device(device, LIBRARY)
-    circuit.add(device, ref, device, x, y, properties=props)
+    circuit.add(device, ref, device, x, y, properties=props, hide_properties=True)
+    if align:
+        # Put probe pin 1 level with the first observed pin so a straight wire can join them.
+        target = circuit._endpoint(next(iter(pins.values())))
+        target_y = next(p["position"][1] for p in circuit.pins(target[0]) if p["name"] == target[1])
+        pin_y = next(p["position"][1] for p in circuit.pins(ref) if p["name"] == "1")
+        if pin_y != target_y:
+            circuit.move(ref, x, y + target_y - pin_y)
     probe = Probe(ref, kind, device, dict(zip(pins, names)))
     for (signal, endpoint), pin in zip(pins.items(), names):
         net = re.sub(r"[^A-Za-z0-9_]", "_", f"PRB_{ref}_{signal}")

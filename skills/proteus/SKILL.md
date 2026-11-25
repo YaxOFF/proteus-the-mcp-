@@ -25,6 +25,13 @@ Order for a live session: **save_project → open_in_proteus → work → close_
 so no PDS.EXE stays running. Offline edits made while Proteus is open are not seen by it: close, edit,
 save, reopen.
 
+## Drawing cleanly
+
+`connect` draws a straight wire only when the two pins face each other on one line; otherwise it
+labels both pins with the same net name. Place parts so related pins line up (same y for left/right
+pins) to get real wires; never ask for style='routed' unless the user wants bent wires. Leave
+`add_probe` x/y empty so it lines up with the observed pin.
+
 ## Look at what you built
 
 After drawing or importing, call `open_in_proteus` then `export_image(path=".../circuit.png")` and

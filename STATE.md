@@ -69,3 +69,12 @@ simulation models remain an explicit limitation; no invented behaviour is shippe
 Local `work/` evidence and proprietary sample projects are ignored and are not
 part of the public repository. Record a reproducible test summary here after
 verification; do not publish those private/generated source artifacts.
+
+## Clean wiring (2026-11-25)
+
+- `connect` (style auto) draws one straight wire only when the pins face each other on one line,
+  otherwise a matching net-label pair; bent multi-segment wires (rendered as zigzags) are used
+  only with style='routed'. Probes use the same rule; `add_probe` without x/y is placed right of the
+  observed part with pin 1 level with the observed pin (straight wire).
+- New component properties are hidden like Proteus model properties (PROGRAM/CLOCK/MODDLL no
+  longer print on the sheet). Visually checked in `work/fw/clean.png`; blink still 99.99 Hz.

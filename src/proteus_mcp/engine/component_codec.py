@@ -430,7 +430,8 @@ class Circuit:
     def import_from_project(self, project, device):
         return self.import_device(device, donor_project=project)
 
-    def add(self, device, ref, value, x, y, *, rotation=0, mirror_x=False, mirror_y=False, properties=None):
+    def add(self, device, ref, value, x, y, *, rotation=0, mirror_x=False, mirror_y=False, properties=None,
+            hide_properties=False):
         _need(device in self.templates, "Device is not in the imported template library")
         _need(isinstance(ref, str) and re.fullmatch(r"[A-Z][A-Z0-9_]*[0-9][A-Z0-9_]*", ref), "Invalid reference")
         _need(len(ref) <= 63 and not any(part["ref"] == ref for part in self._parts), "Duplicate/oversized reference")
@@ -441,7 +442,7 @@ class Circuit:
         # Render now so invalid fields cannot enter the circuit.
         part = {"device": device, "ref": ref, "value": value, "x": x, "y": y,
                 "rotation": rotation, "mirror_x": mirror_x, "mirror_y": mirror_y,
-                "properties": dict(properties or {})}
+                "properties": dict(properties or {}), "hide_properties": bool(hide_properties)}
         self._validate(self._parts + [part], self._connections)
         self._parts.append(part)
         return self
@@ -548,7 +549,11 @@ class Circuit:
                 value = str(value)
                 _need(all(32 <= ord(char) < 127 and char not in "{}" for char in value), "Invalid property value")
             pattern = re.compile(r"^\s*\{?" + re.escape(key) + "=")
-            hidden = any(line.lstrip().startswith("{") for line in lines if pattern.match(line))
+            present = [line for line in lines if pattern.match(line)]
+            # New keys are hidden like Proteus's own model properties (PROGRAM, CLOCK, MODDLL ...);
+            # an existing key keeps its current visibility.
+            hidden = part.get("hide_properties") or not present or any(
+                line.lstrip().startswith("{") for line in present)
             lines = [line for line in lines if not pattern.match(line)]
             if value is not None:
                 text = key + "=" + value
